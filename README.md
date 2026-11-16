@@ -4,7 +4,11 @@ A GraphQL service that takes a city or town and ranks the next 7 days for **skii
 
 **Stack:** Node.js 24, TypeScript, Apollo Server 5 on Express, PostgreSQL 17 with Drizzle ORM, Zod, Jest, pino.
 
-Why it is built this way — alternatives, trade-offs, open product questions and what was left out — is in **[docs/DECISIONS.md](docs/DECISIONS.md)**.
+## How the work was done
+
+- **[docs/PLAN.md](docs/PLAN.md)**: the implementation plan as approved before any code was written.
+- **[docs/WORKLOG.md](docs/WORKLOG.md)**: how the work then went, including design reviews, changes of direction, defects found by tests and a later hardening pass, with links to the commits.
+- **[docs/DECISIONS.md](docs/DECISIONS.md)**: why it is built this way, covering alternatives, trade-offs, open product questions and what was left out.
 
 ## Quick start
 
@@ -187,6 +191,8 @@ src/
 drizzle/                SQL migrations
 test/unit/              unit tests
 test/integration/       PostgreSQL-backed tests with a fake Open-Meteo
+docs/PLAN.md            implementation plan, as approved before coding
+docs/WORKLOG.md         how the work went, with links to commits
 docs/DECISIONS.md       decision log
 ```
 
