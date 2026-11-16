@@ -15,6 +15,7 @@ import { createGraphQLServer } from '../../src/graphql/server';
 import { typeDefs } from '../../src/graphql/schema';
 import { createOpenMeteoClient } from '../../src/openmeteo/client';
 import { createForecastService } from '../../src/services/forecastService';
+import { createUpstreamLimiter } from '../../src/services/limiter';
 import { createLocationService } from '../../src/services/locationService';
 import { openTestDb, truncateAll } from './support/database';
 import { fakeClock, recordingLogger } from './support/fakes';
@@ -124,15 +125,18 @@ function setup(start = T0) {
     timeoutMs: 1000,
     fetch: fetchFn,
   });
+  // One limiter for both services, as in src/index.ts.
+  const limiter = createUpstreamLimiter(10);
   const server = createGraphQLServer({
     logger: log.logger,
-    locationService: createLocationService({ db, geocode: (q) => client.geocode(q) }),
+    locationService: createLocationService({ db, geocode: (q) => client.geocode(q), limiter }),
     forecastService: createForecastService({
       db,
       client,
       clock: time.clock,
       forecastTtlSeconds: 3600,
       marineRetrySeconds: 300,
+      limiter,
     }),
   });
 

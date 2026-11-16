@@ -3,6 +3,7 @@ import type { Db } from '../db/client';
 import { locationLookups, locations } from '../db/schema';
 import { UpstreamError, type OpenMeteoClient } from '../openmeteo/client';
 import { LocationNotFoundError, UpstreamUnavailableError } from './errors';
+import type { UpstreamLimiter } from './limiter';
 import { silentLogger, type Logger } from './logger';
 
 export type StoredLocation = typeof locations.$inferSelect;
@@ -15,10 +16,17 @@ export function normalizeQuery(query: string): string {
 export interface LocationServiceDeps {
   db: Db;
   geocode: OpenMeteoClient['geocode'];
+  /** Shared with the forecast service: bounds upstream operations in this process. */
+  limiter: UpstreamLimiter;
   logger?: Logger;
 }
 
-export function createLocationService({ db, geocode, logger = silentLogger }: LocationServiceDeps) {
+export function createLocationService({
+  db,
+  geocode,
+  limiter,
+  logger = silentLogger,
+}: LocationServiceDeps) {
   async function findByLookup(queryNormalized: string): Promise<StoredLocation | null> {
     const [row] = await db
       .select({ location: locations })
@@ -43,6 +51,12 @@ export function createLocationService({ db, geocode, logger = silentLogger }: Lo
         return known;
       }
 
+      // Only a search that is not stored needs Open-Meteo, so only it needs a permit.
+      const release = limiter.tryAcquire();
+      if (!release) {
+        logger.warn({ query: key, reason: 'upstream_busy' }, 'geocode.skipped');
+        throw new UpstreamUnavailableError('Location search is busy');
+      }
       let result;
       try {
         result = await geocode(query.trim());
@@ -51,6 +65,8 @@ export function createLocationService({ db, geocode, logger = silentLogger }: Lo
           throw new UpstreamUnavailableError('Location search is unavailable', { cause: error });
         }
         throw error;
+      } finally {
+        release(); // held for the upstream call only, not for the database writes below
       }
       logger.info({ query: key, result: result.kind }, 'geocode.called');
       if (result.kind === 'not_found') throw new LocationNotFoundError(query.trim());

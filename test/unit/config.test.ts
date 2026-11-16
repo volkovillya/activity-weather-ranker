@@ -11,6 +11,7 @@ describe('loadConfig', () => {
       forecastTtlSeconds: 3600,
       marineRetrySeconds: 300,
       upstreamTimeoutMs: 3000,
+      upstreamMaxConcurrent: 10,
       dbConnectionTimeoutMs: 5000,
       dbStatementTimeoutMs: 5000,
       dbPoolMax: 10,
@@ -29,6 +30,7 @@ describe('loadConfig', () => {
       FORECAST_TTL_SECONDS: '60',
       MARINE_RETRY_SECONDS: '30',
       UPSTREAM_TIMEOUT_MS: '500',
+      UPSTREAM_MAX_CONCURRENT: '4',
       DB_CONNECTION_TIMEOUT_MS: '1500',
       DB_STATEMENT_TIMEOUT_MS: '2500',
       DB_POOL_MAX: '25',
@@ -39,6 +41,7 @@ describe('loadConfig', () => {
     expect(config.forecastTtlSeconds).toBe(60);
     expect(config.marineRetrySeconds).toBe(30);
     expect(config.upstreamTimeoutMs).toBe(500);
+    expect(config.upstreamMaxConcurrent).toBe(4);
     expect(config.dbConnectionTimeoutMs).toBe(1500);
     expect(config.dbStatementTimeoutMs).toBe(2500);
     expect(config.dbPoolMax).toBe(25);
@@ -70,6 +73,22 @@ describe('loadConfig', () => {
     (name) => {
       expect(() => loadConfig({ DATABASE_URL, [name]: '0' })).toThrow(
         new RegExp(`${name} must be greater than 0`),
+      );
+    },
+  );
+
+  // H3h
+  it('rejects an UPSTREAM_MAX_CONCURRENT of 0: it would refuse all upstream work', () => {
+    expect(() => loadConfig({ DATABASE_URL, UPSTREAM_MAX_CONCURRENT: '0' })).toThrow(
+      /UPSTREAM_MAX_CONCURRENT must be greater than 0/,
+    );
+  });
+
+  it.each(['', '-1', '1.5', 'abc'])(
+    'rejects UPSTREAM_MAX_CONCURRENT=%j instead of coercing it',
+    (value) => {
+      expect(() => loadConfig({ DATABASE_URL, UPSTREAM_MAX_CONCURRENT: value })).toThrow(
+        /UPSTREAM_MAX_CONCURRENT must be a non-negative integer/,
       );
     },
   );

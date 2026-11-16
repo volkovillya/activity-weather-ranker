@@ -20,6 +20,8 @@ const EnvSchema = z.object({
   FORECAST_TTL_SECONDS: nonNegativeInt.default(3600),
   MARINE_RETRY_SECONDS: nonNegativeInt.default(300),
   UPSTREAM_TIMEOUT_MS: positiveInt.default(3000),
+  // Upstream operations (a geocode, or a refresh's weather and marine calls) at once per process.
+  UPSTREAM_MAX_CONCURRENT: positiveInt.default(10),
   // Positive on purpose: in Postgres and node-postgres, 0 means "wait forever".
   DB_CONNECTION_TIMEOUT_MS: positiveInt.default(5000),
   DB_STATEMENT_TIMEOUT_MS: positiveInt.default(5000),
@@ -36,6 +38,8 @@ export interface Config {
   forecastTtlSeconds: number;
   marineRetrySeconds: number;
   upstreamTimeoutMs: number;
+  /** Upstream operations allowed at once in this process; beyond it, requests fall back at once. */
+  upstreamMaxConcurrent: number;
   /** Time allowed to open a database connection (pool `connectionTimeoutMillis`). */
   dbConnectionTimeoutMs: number;
   /** Postgres `statement_timeout`, set on every pooled connection. */
@@ -70,6 +74,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     forecastTtlSeconds: e.FORECAST_TTL_SECONDS,
     marineRetrySeconds: e.MARINE_RETRY_SECONDS,
     upstreamTimeoutMs: e.UPSTREAM_TIMEOUT_MS,
+    upstreamMaxConcurrent: e.UPSTREAM_MAX_CONCURRENT,
     dbConnectionTimeoutMs: e.DB_CONNECTION_TIMEOUT_MS,
     dbStatementTimeoutMs: e.DB_STATEMENT_TIMEOUT_MS,
     dbPoolMax: e.DB_POOL_MAX,

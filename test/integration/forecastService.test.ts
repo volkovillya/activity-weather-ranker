@@ -1,18 +1,20 @@
 import { afterAll, beforeEach, describe, expect, it } from '@jest/globals';
 import { asc, eq, sql } from 'drizzle-orm';
-import { dailyForecasts } from '../../src/db/schema';
+import { dailyForecasts, locationLookups, locations } from '../../src/db/schema';
 import { rankActivities } from '../../src/domain/rank';
 import type { DailyWeather } from '../../src/domain/types';
-import type { MarineDay, WeatherDay } from '../../src/openmeteo/client';
+import type { GeocodeResult, MarineDay, WeatherDay } from '../../src/openmeteo/client';
 import { UpstreamUnavailableError } from '../../src/services/errors';
 import { createForecastService } from '../../src/services/forecastService';
-import type { StoredLocation } from '../../src/services/locationService';
+import { createUpstreamLimiter, type UpstreamLimiter } from '../../src/services/limiter';
+import { createLocationService, type StoredLocation } from '../../src/services/locationService';
 import { insertLocation, openTestDb, truncateAll, WARSAW } from './support/database';
 import {
   deferred,
   eventually,
   fakeClock,
   fakeForecastClient,
+  fakeGeocoder,
   inlandMarine,
   marineWeek,
   recordingLogger,
@@ -54,19 +56,29 @@ afterAll(() => pool.end());
 type Fake = ReturnType<typeof fakeForecastClient>;
 type Time = ReturnType<typeof fakeClock>;
 
-function setup(options: { ttl?: number; retry?: number; time?: Time; fake?: Fake } = {}) {
+function setup(
+  options: {
+    ttl?: number;
+    retry?: number;
+    time?: Time;
+    fake?: Fake;
+    limiter?: UpstreamLimiter;
+  } = {},
+) {
   const time = options.time ?? fakeClock(T0);
   const fake = options.fake ?? fakeForecastClient();
   const log = recordingLogger();
+  const limiter = options.limiter ?? createUpstreamLimiter(10);
   const service = createForecastService({
     db,
     client: fake.client,
     clock: time.clock,
     forecastTtlSeconds: options.ttl ?? 3600,
     marineRetrySeconds: options.retry ?? 300,
+    limiter,
     logger: log.logger,
   });
-  return { service, fake, time, log };
+  return { service, fake, time, log, limiter };
 }
 
 const failing = (endpoint: 'forecast' | 'marine') => () => Promise.reject(upstreamDown(endpoint));
@@ -512,4 +524,156 @@ describe('concurrency', () => {
       ]);
     },
   );
+});
+
+// ---------- Upstream limiter (post-review hardening, H3) ----------
+
+describe('upstream limiter', () => {
+  const HOUR_MS = 3600 * 1000;
+
+  /** Every column of every stored row for a location, to prove a refused refresh wrote nothing. */
+  const snapshot = async (locationId = WARSAW.id) => JSON.stringify(await storedRows(locationId));
+
+  /** Starts a Biarritz refresh that holds its permit until `release()` is called. */
+  async function holdPermitWithRefresh(service: ReturnType<typeof setup>['service'], fake: Fake) {
+    await db.insert(locations).values(BIARRITZ).onConflictDoNothing();
+    const weather = deferred<WeatherDay[]>();
+    const original = { weather: fake.weather, marine: fake.marine };
+    fake.weather = (d, point) =>
+      point.latitude === BIARRITZ.latitude ? weather.promise : original.weather(d, point);
+    const pending = service.getWeek(BIARRITZ);
+    await eventually(() => fake.calls.weather.length === 1);
+    return {
+      release: async () => {
+        weather.resolve(weatherWeek(WEEK_16, 9));
+        await pending;
+      },
+    };
+  }
+
+  // H3b
+  it('serves an expired complete week as stale when no permit is free, and writes nothing', async () => {
+    const limiter = createUpstreamLimiter(1);
+    const { service, fake, log } = setup({ limiter });
+    await storeRows(WEEK_16, T0_MS - 2 * HOUR_MS);
+    const before = await snapshot();
+
+    const holder = await holdPermitWithRefresh(service, fake);
+    const week = await service.getWeek(WARSAW);
+
+    expect(week.stale).toBe(true);
+    expect(week.fetchedAt).toEqual(new Date(T0_MS - 2 * HOUR_MS));
+    expect(temps(week.days)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(fake.calls.weather.map((c) => c.point.latitude)).toEqual([BIARRITZ.latitude]);
+    expect(fake.calls.marine.map((c) => c.point.latitude)).toEqual([BIARRITZ.latitude]);
+    expect(await snapshot()).toBe(before);
+    expect(log.events).toContain('forecast.refresh_skipped');
+    await holder.release();
+  });
+
+  // H3c
+  it('keeps fresh weather not stale when a due marine retry is refused', async () => {
+    const limiter = createUpstreamLimiter(1);
+    const { service, fake } = setup({ limiter, ttl: 3600, retry: 300 });
+    const storedAt = T0_MS - 400 * 1000; // within the TTL, past the marine retry window
+    await db.insert(dailyForecasts).values(
+      weatherWeek(WEEK_16, 0).map((day) => ({
+        ...day,
+        locationId: WARSAW.id,
+        fetchedAt: new Date(storedAt),
+        marineFetched: false,
+        waveHeightMaxM: null,
+        swellPeriodMaxS: null,
+      })),
+    );
+    const before = await snapshot();
+    const occupied = limiter.tryAcquire()!;
+
+    const week = await service.getWeek(WARSAW);
+
+    expect(week.stale).toBe(false);
+    expect(week.fetchedAt).toEqual(new Date(storedAt));
+    expect(surfingReason(week.days)).toBe('MARINE_TEMPORARILY_UNAVAILABLE');
+    expect(fake.calls.weather).toHaveLength(0);
+    expect(fake.calls.marine).toHaveLength(0);
+    expect(await snapshot()).toBe(before);
+    occupied();
+  });
+
+  // H3d
+  it('fails with UPSTREAM_UNAVAILABLE when no permit is free and the stored week is incomplete', async () => {
+    const limiter = createUpstreamLimiter(1);
+    const { service, fake } = setup({ limiter });
+    await storeRows(WEEK_16.slice(0, 6), T0_MS);
+    const before = await snapshot();
+    const occupied = limiter.tryAcquire()!;
+
+    await expect(service.getWeek(WARSAW)).rejects.toBeInstanceOf(UpstreamUnavailableError);
+    expect(fake.calls.weather).toHaveLength(0);
+    expect(await snapshot()).toBe(before);
+    occupied();
+  });
+
+  // H3e
+  it('lets concurrent requests for the same week share one permit', async () => {
+    const limiter = createUpstreamLimiter(1);
+    const { service, fake, log } = setup({ limiter });
+    const weather = deferred<WeatherDay[]>();
+    fake.weather = () => weather.promise;
+
+    const requests = Array.from({ length: 10 }, () => service.getWeek(WARSAW));
+    await eventually(() => log.count('forecast.cache_miss') === 10);
+    weather.resolve(weatherWeek(WEEK_16, 1));
+
+    const weeks = await Promise.all(requests);
+    expect(weeks.every((w) => temps(w.days).every((t) => t === 1) && !w.stale)).toBe(true);
+    expect(fake.calls.weather).toHaveLength(1);
+    expect(log.count('forecast.refresh_skipped')).toBe(0);
+  });
+
+  // H3f
+  it.each([
+    ['a successful refresh', () => Promise.resolve(weatherWeek(WEEK_16, 1)), 'resolves'],
+    ['an Open-Meteo failure', () => Promise.reject(upstreamDown('forecast')), 'rejects'],
+    ['an unexpected error', () => Promise.reject(new TypeError('a bug')), 'rejects'],
+  ] as const)('returns the permit after %s', async (_, answer, outcome) => {
+    const limiter = createUpstreamLimiter(1);
+    const { service, fake } = setup({ limiter });
+    fake.weather = answer;
+
+    const result = service.getWeek(WARSAW);
+    await (outcome === 'resolves' ? expect(result).resolves : expect(result).rejects).toBeDefined();
+
+    const permit = limiter.tryAcquire();
+    expect(permit).not.toBeNull();
+    permit!();
+  });
+
+  // H3g
+  it('shares one limiter between geocoding and refreshes', async () => {
+    const limiter = createUpstreamLimiter(1);
+    const { service: forecasts, fake } = setup({ limiter });
+    const answer = deferred<GeocodeResult>();
+    const geo = fakeGeocoder(() => answer.promise);
+    const places = createLocationService({ db, geocode: geo.geocode, limiter });
+    await db.insert(locationLookups).values({ queryNormalized: 'warsaw', locationId: WARSAW.id });
+    await storeRows(WEEK_16, T0_MS - 2 * HOUR_MS);
+
+    // A geocode holds the only permit: an expired city falls back to its stored week.
+    const geocoding = places.resolveLocation('Biarritz');
+    await eventually(() => geo.calls.length === 1);
+    const week = await forecasts.getWeek(WARSAW);
+    expect(week.stale).toBe(true);
+    expect(fake.calls.weather).toHaveLength(0);
+    answer.resolve({ kind: 'found', location: BIARRITZ });
+    await expect(geocoding).resolves.toMatchObject({ id: BIARRITZ.id });
+
+    // A refresh holds the only permit: a new search is refused, a known one still resolves.
+    const holder = await holdPermitWithRefresh(forecasts, fake);
+    await expect(places.resolveLocation('Gdańsk')).rejects.toBeInstanceOf(UpstreamUnavailableError);
+    expect(geo.calls).toEqual(['Biarritz']);
+    await expect(places.resolveLocation('Warsaw')).resolves.toMatchObject({ id: WARSAW.id });
+    expect(await db.select().from(locations)).toHaveLength(2); // Warsaw and Biarritz only
+    await holder.release();
+  });
 });

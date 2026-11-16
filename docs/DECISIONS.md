@@ -138,6 +138,20 @@ These entries were added after the six implementation phases, following a review
   - **Why.** A query for this schema is a few kilobytes. A 50 MB body is buffered in memory and parsed synchronously, so a few such requests can block the event loop for every client. A large body was also the only way to fit thousands of aliases into one request.
   - **Error.** A larger body still gets the existing JSON error (`BAD_REQUEST`, HTTP 413).
 - **The connection pool size is configurable** (`DB_POOL_MAX`, default 10). The pool used node-postgres's implicit default of 10 connections per process. With several instances, instances × pool size must stay below Postgres's `max_connections` (100 by default), so the value is now explicit. A request that finds the pool full still waits at most `DB_CONNECTION_TIMEOUT_MS`.
+- **Upstream operations are bounded per process by fail-fast admission.**
+  - **The problem.** Single-flight removes duplicate refreshes of one location and week, but nothing capped how many _different_ refreshes and geocodes ran at once. A burst of distinct cities, or a slow Open-Meteo, meant unbounded sockets, memory and upstream calls.
+  - **The limiter.** One limiter, created in `src/index.ts` and shared by both services, allows `UPSTREAM_MAX_CONCURRENT` operations at once (default 10, a judgment value).
+  - **What counts as one operation.** A geocode is one operation. A refresh is also one, covering its weather and marine calls together. If each HTTP call took its own permit, a refused marine call would be stored as a marine failure and would discard good wave data.
+  - **When the permit is taken.** A refresh takes its permit inside single-flight, so callers that join a running refresh take none. A search takes a permit only after its stored lookup misses.
+  - **When it is released.** As soon as the upstream calls settle, in `finally`, through an idempotent release. The permit is not held during database writes.
+  - **No queue.** When every permit is taken, the request does not wait. A queue was considered and rejected: it lets waiting callers pile up and needs timers.
+  - **A refused refresh writes nothing and counts as a failed refresh attempt**, so `stale` keeps its meaning:
+    - expired weather with a complete stored week is served with `stale: true`;
+    - weather still within the TTL is served with `stale: false` even when a due marine retry was refused, and surfing stays temporarily unavailable;
+    - with no complete stored week, the request fails with `UPSTREAM_UNAVAILABLE`.
+  - **A refused search** is `UPSTREAM_UNAVAILABLE`, and nothing is stored.
+  - **What it does not do.** It bounds concurrency within one process. It does not limit request rate, and it does not protect Open-Meteo's shared quota across instances: N instances allow N times the limit. That needs a rate limiter at a gateway, which remains out of scope.
+  - **The wiring.** `src/index.ts` has no tests, so the single shared instance is checked by review. A test proves that one limiter shared by both services makes geocoding and refreshes refuse each other.
 
 ## Known limitations
 

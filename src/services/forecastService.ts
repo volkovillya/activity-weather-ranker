@@ -4,14 +4,21 @@ import type { Db } from '../db/client';
 import { dailyForecasts } from '../db/schema';
 import { weekDates } from '../domain/dates';
 import type { DailyWeather } from '../domain/types';
-import { UpstreamError, type OpenMeteoClient } from '../openmeteo/client';
+import {
+  UpstreamError,
+  type MarineDay,
+  type OpenMeteoClient,
+  type WeatherDay,
+} from '../openmeteo/client';
 import { UpstreamUnavailableError } from './errors';
+import type { UpstreamLimiter } from './limiter';
 import { silentLogger, type Logger } from './logger';
 import type { StoredLocation } from './locationService';
 
 export type Clock = () => Date;
 
-type RefreshOutcome = 'refreshed' | 'weather_failed';
+/** `not_admitted`: no upstream permit was free, so nothing was requested or written. */
+type RefreshOutcome = 'refreshed' | 'weather_failed' | 'not_admitted';
 type StoredDay = DailyWeather & { fetchedAt: Date };
 type ForecastLocation = Pick<StoredLocation, 'id' | 'latitude' | 'longitude' | 'timezone'>;
 
@@ -33,6 +40,8 @@ export interface ForecastServiceDeps {
   clock: Clock;
   forecastTtlSeconds: number;
   marineRetrySeconds: number;
+  /** Shared with the location service: bounds upstream operations in this process. */
+  limiter: UpstreamLimiter;
   logger?: Logger;
 }
 
@@ -40,7 +49,7 @@ export interface ForecastServiceDeps {
 const excluded = (column: AnyPgColumn) => sql`excluded.${sql.identifier(column.name)}`;
 
 export function createForecastService(deps: ForecastServiceDeps) {
-  const { db, client, clock, logger = silentLogger } = deps;
+  const { db, client, clock, limiter, logger = silentLogger } = deps;
   const ttlMs = deps.forecastTtlSeconds * 1000;
   const marineRetryMs = deps.marineRetrySeconds * 1000;
 
@@ -80,15 +89,32 @@ export function createForecastService(deps: ForecastServiceDeps) {
     location: ForecastLocation,
     dates: readonly string[],
   ): Promise<RefreshOutcome> {
+    // One permit covers both calls, so a refused refresh never stores weather without marine
+    // data. Callers that join this refresh through refreshOnce take no permit of their own.
+    const release = limiter.tryAcquire();
+    if (!release) {
+      logger.warn(
+        { locationId: location.id, firstDate: dates[0], reason: 'upstream_busy' },
+        'forecast.refresh_skipped',
+      );
+      return 'not_admitted';
+    }
+
     // Taken before either call, so a refresh requested later always wins, however long the
     // slower of its two calls takes.
     const requestedAt = clock();
     const started = performance.now();
 
-    const [weather, marine] = await Promise.allSettled([
-      client.fetchWeather(location, dates),
-      client.fetchMarine(location, dates),
-    ]);
+    let weather: PromiseSettledResult<WeatherDay[]>;
+    let marine: PromiseSettledResult<MarineDay[]>;
+    try {
+      [weather, marine] = await Promise.allSettled([
+        client.fetchWeather(location, dates),
+        client.fetchMarine(location, dates),
+      ]);
+    } finally {
+      release(); // held for the upstream calls only, not for the database write below
+    }
     for (const result of [weather, marine]) {
       if (result.status === 'rejected' && !(result.reason instanceof UpstreamError)) {
         throw result.reason; // a bug, not an outage
@@ -180,15 +206,17 @@ export function createForecastService(deps: ForecastServiceDeps) {
       // Always serve what Postgres holds, never the upstream payload: a concurrent refresh may
       // have written newer rows, and data that failed to persist must not be returned.
       const week = await readWeek(location.id, dates);
+      // A refresh refused for lack of a permit is a failed attempt, exactly like a weather failure.
+      const failed = outcome !== 'refreshed';
       if (!week) {
-        if (outcome === 'weather_failed') {
+        if (failed) {
           throw new UpstreamUnavailableError(
             'The weather forecast is unavailable and no complete stored week exists',
           );
         }
         throw new Error(`Week ${dates[0]} of location ${location.id} incomplete after a refresh`);
       }
-      return toWeek(week, outcome === 'weather_failed' && !isWeatherFresh(week, clock()));
+      return toWeek(week, failed && !isWeatherFresh(week, clock()));
     },
   };
 }

@@ -5,6 +5,7 @@ import { startHttpServer } from './graphql/http';
 import { createGraphQLServer } from './graphql/server';
 import { createOpenMeteoClient } from './openmeteo/client';
 import { createForecastService } from './services/forecastService';
+import { createUpstreamLimiter } from './services/limiter';
 import { createLocationService } from './services/locationService';
 
 async function main(): Promise<void> {
@@ -27,11 +28,15 @@ async function main(): Promise<void> {
     timeoutMs: config.upstreamTimeoutMs,
   });
 
+  // One limiter for both services, so the limit covers all upstream operations in this process.
+  const upstreamLimiter = createUpstreamLimiter(config.upstreamMaxConcurrent);
+
   const server = createGraphQLServer({
     logger,
     locationService: createLocationService({
       db,
       geocode: (query) => openMeteo.geocode(query),
+      limiter: upstreamLimiter,
       logger,
     }),
     forecastService: createForecastService({
@@ -40,6 +45,7 @@ async function main(): Promise<void> {
       clock: () => new Date(),
       forecastTtlSeconds: config.forecastTtlSeconds,
       marineRetrySeconds: config.marineRetrySeconds,
+      limiter: upstreamLimiter,
       logger,
     }),
   });

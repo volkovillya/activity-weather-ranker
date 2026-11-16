@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from '@jest/globals';
 import type { GeocodeResult, GeoLocation } from '../../src/openmeteo/client';
 import { LocationNotFoundError, UpstreamUnavailableError } from '../../src/services/errors';
+import { createUpstreamLimiter } from '../../src/services/limiter';
 import { createLocationService, normalizeQuery } from '../../src/services/locationService';
 import { locationLookups, locations } from '../../src/db/schema';
 import { openTestDb, truncateAll } from './support/database';
@@ -50,7 +51,11 @@ describe('resolveLocation', () => {
   // L1
   it('answers a repeated search from the database without geocoding again', async () => {
     const geo = fakeGeocoder(() => found(KRAKOW));
-    const service = createLocationService({ db, geocode: geo.geocode });
+    const service = createLocationService({
+      db,
+      geocode: geo.geocode,
+      limiter: createUpstreamLimiter(10),
+    });
 
     await expect(service.resolveLocation('Kraków')).resolves.toEqual(KRAKOW);
     await expect(service.resolveLocation('Kraków')).resolves.toEqual(KRAKOW);
@@ -60,7 +65,11 @@ describe('resolveLocation', () => {
   // L2
   it('treats spellings that normalise to the same text as one search', async () => {
     const geo = fakeGeocoder(() => found(KRAKOW));
-    const service = createLocationService({ db, geocode: geo.geocode });
+    const service = createLocationService({
+      db,
+      geocode: geo.geocode,
+      limiter: createUpstreamLimiter(10),
+    });
 
     for (const query of ['Kraków ', 'kraków', '  KRAKÓW', 'Kraków']) {
       await expect(service.resolveLocation(query)).resolves.toMatchObject({ id: KRAKOW.id });
@@ -72,7 +81,11 @@ describe('resolveLocation', () => {
   // L3
   it('reports an unknown place and stores nothing', async () => {
     const geo = fakeGeocoder(() => Promise.resolve({ kind: 'not_found' }));
-    const service = createLocationService({ db, geocode: geo.geocode });
+    const service = createLocationService({
+      db,
+      geocode: geo.geocode,
+      limiter: createUpstreamLimiter(10),
+    });
 
     await expect(service.resolveLocation('Zzqxqxq')).rejects.toBeInstanceOf(LocationNotFoundError);
     expect(await counts()).toEqual({ locations: 0, lookups: 0 });
@@ -81,7 +94,11 @@ describe('resolveLocation', () => {
   // L4
   it('reports the geocoder as unavailable when it fails and the search is not stored', async () => {
     const geo = fakeGeocoder(() => Promise.reject(upstreamDown('geocoding')));
-    const service = createLocationService({ db, geocode: geo.geocode });
+    const service = createLocationService({
+      db,
+      geocode: geo.geocode,
+      limiter: createUpstreamLimiter(10),
+    });
 
     const error = await service.resolveLocation('Kraków').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(UpstreamUnavailableError);
@@ -94,7 +111,11 @@ describe('resolveLocation', () => {
     const geo = fakeGeocoder(() =>
       up ? found(KRAKOW) : Promise.reject(upstreamDown('geocoding')),
     );
-    const service = createLocationService({ db, geocode: geo.geocode });
+    const service = createLocationService({
+      db,
+      geocode: geo.geocode,
+      limiter: createUpstreamLimiter(10),
+    });
 
     await service.resolveLocation('Kraków');
     up = false;
@@ -105,7 +126,11 @@ describe('resolveLocation', () => {
   // L5
   it('survives two concurrent first searches for the same text', async () => {
     const geo = fakeGeocoder(() => found(KRAKOW));
-    const service = createLocationService({ db, geocode: geo.geocode });
+    const service = createLocationService({
+      db,
+      geocode: geo.geocode,
+      limiter: createUpstreamLimiter(10),
+    });
 
     const results = await Promise.all([
       service.resolveLocation('Kraków'),
@@ -119,7 +144,11 @@ describe('resolveLocation', () => {
   it('lets the persisted lookup decide when two concurrent geocodes disagree', async () => {
     const answers = [deferred<GeocodeResult>(), deferred<GeocodeResult>()];
     const geo = fakeGeocoder(() => answers[geo.calls.length - 1]!.promise);
-    const service = createLocationService({ db, geocode: geo.geocode });
+    const service = createLocationService({
+      db,
+      geocode: geo.geocode,
+      limiter: createUpstreamLimiter(10),
+    });
 
     // Either request may reach the geocoder first (their lookups run on different connections),
     // so the answers go out in geocoding order, not in the order the requests were started.
@@ -144,5 +173,51 @@ describe('resolveLocation', () => {
       id: SPRINGFIELD_MO.id,
     });
     expect(geo.calls).toHaveLength(2);
+  });
+});
+
+// ---------- Upstream limiter (post-review hardening, H3) ----------
+
+describe('resolveLocation with the upstream limiter', () => {
+  it('refuses a new search at once when no permit is free, and stores nothing', async () => {
+    const limiter = createUpstreamLimiter(1);
+    const geo = fakeGeocoder(() => found(KRAKOW));
+    const service = createLocationService({ db, geocode: geo.geocode, limiter });
+    const occupied = limiter.tryAcquire()!;
+
+    await expect(service.resolveLocation('Kraków')).rejects.toBeInstanceOf(
+      UpstreamUnavailableError,
+    );
+    expect(geo.calls).toHaveLength(0);
+    expect(await counts()).toEqual({ locations: 0, lookups: 0 });
+    occupied();
+  });
+
+  it('answers a known search without a permit', async () => {
+    const limiter = createUpstreamLimiter(1);
+    const geo = fakeGeocoder(() => found(KRAKOW));
+    const service = createLocationService({ db, geocode: geo.geocode, limiter });
+    await service.resolveLocation('Kraków');
+    const occupied = limiter.tryAcquire()!;
+
+    await expect(service.resolveLocation('kraków')).resolves.toMatchObject({ id: KRAKOW.id });
+    expect(geo.calls).toHaveLength(1);
+    occupied();
+  });
+
+  it.each([
+    ['a match', () => found(KRAKOW)],
+    ['no match', (): Promise<GeocodeResult> => Promise.resolve({ kind: 'not_found' })],
+    ['an Open-Meteo failure', () => Promise.reject(upstreamDown('geocoding'))],
+    ['an unexpected error', () => Promise.reject(new TypeError('a bug'))],
+  ] as const)('returns the permit after %s', async (_, answer) => {
+    const limiter = createUpstreamLimiter(1);
+    const service = createLocationService({ db, geocode: fakeGeocoder(answer).geocode, limiter });
+
+    await service.resolveLocation('Kraków').catch(() => undefined);
+
+    const permit = limiter.tryAcquire();
+    expect(permit).not.toBeNull();
+    permit!();
   });
 });
