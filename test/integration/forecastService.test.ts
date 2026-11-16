@@ -371,6 +371,56 @@ describe('concurrency', () => {
     expect(rows.every((r) => r.tempMaxC === 2 && r.marineFetched && r.waveHeightMaxM === 2.5)).toBe(
       true,
     );
+
+    // A's failed marine call did not invalidate B's marine data, for A's caller either...
+    expect(surfingReason(weekA.days)).toBeNull();
+    // ...and the week is not treated as "marine failed" later: past the retry window, within the
+    // TTL, nothing is refetched.
+    time.advanceSeconds(301);
+    await a.service.getWeek(WARSAW);
+    expect(a.fake.calls.marine).toHaveLength(1);
+    expect(b.fake.calls.marine).toHaveLength(1);
+  });
+
+  it('lets a refresh requested later win even when its marine call failed (documented trade-off)', async () => {
+    // The mirror image of F11: B is requested first and persists first; A is requested one
+    // second later, its marine call fails, and it persists last. A's weather is newer, so A's
+    // rows win, and weather and marine are replaced as one unit: B's good wave data is lost
+    // until the marine retry window passes. Pinned here so the behaviour cannot change unnoticed.
+    const time = fakeClock(T0);
+    const b = setup({ time });
+    const a = setup({ time });
+    const weatherB = deferred<WeatherDay[]>();
+    const marineB = deferred<MarineDay[]>();
+    b.fake.weather = () => weatherB.promise;
+    b.fake.marine = () => marineB.promise;
+    const marineA = deferred<MarineDay[]>();
+    a.fake.marine = () => marineA.promise;
+
+    const pendingB = b.service.getWeek(WARSAW); // requested at t0
+    await eventually(() => b.fake.calls.marine.length === 1);
+    time.advanceSeconds(1);
+    const pendingA = a.service.getWeek(WARSAW); // requested at t0 + 1 s
+    await eventually(() => a.fake.calls.marine.length === 1);
+
+    weatherB.resolve(weatherWeek(WEEK_16, 2));
+    marineB.resolve(marineWeek(WEEK_16, 2.5));
+    expect(surfingReason((await pendingB).days)).toBeNull(); // B persisted first, complete
+
+    marineA.reject(upstreamDown('marine'));
+    const weekA = await pendingA;
+    expect(temps(weekA.days)).toEqual([1, 1, 1, 1, 1, 1, 1]); // A's newer weather
+    expect(surfingReason(weekA.days)).toBe('MARINE_TEMPORARILY_UNAVAILABLE');
+    expect((await storedRows()).every((r) => !r.marineFetched && r.waveHeightMaxM === null)).toBe(
+      true,
+    );
+
+    // It heals: once the retry window has passed, the next request fetches marine again.
+    time.advanceSeconds(301);
+    a.fake.marine = (d) => Promise.resolve(marineWeek(d, 2.5));
+    const healed = await a.service.getWeek(WARSAW);
+    expect(a.fake.calls.marine).toHaveLength(2);
+    expect(surfingReason(healed.days)).toBeNull();
   });
 
   // F12
