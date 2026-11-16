@@ -137,6 +137,7 @@ These entries were added after the six implementation phases, following a review
 - **Request bodies are limited to 100 KB, Express's default.** This reverses the earlier choice to keep the standalone server's 50 MB limit (see "HTTP through Apollo's official Express integration" above).
   - **Why.** A query for this schema is a few kilobytes. A 50 MB body is buffered in memory and parsed synchronously, so a few such requests can block the event loop for every client. A large body was also the only way to fit thousands of aliases into one request.
   - **Error.** A larger body still gets the existing JSON error (`BAD_REQUEST`, HTTP 413).
+- **The connection pool size is configurable** (`DB_POOL_MAX`, default 10). The pool used node-postgres's implicit default of 10 connections per process. With several instances, instances × pool size must stay below Postgres's `max_connections` (100 by default), so the value is now explicit. A request that finds the pool full still waits at most `DB_CONNECTION_TIMEOUT_MS`.
 
 ## Known limitations
 

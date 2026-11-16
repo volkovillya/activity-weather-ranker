@@ -23,6 +23,8 @@ const EnvSchema = z.object({
   // Positive on purpose: in Postgres and node-postgres, 0 means "wait forever".
   DB_CONNECTION_TIMEOUT_MS: positiveInt.default(5000),
   DB_STATEMENT_TIMEOUT_MS: positiveInt.default(5000),
+  // node-postgres's own default, made explicit: instances × pool size must fit max_connections.
+  DB_POOL_MAX: positiveInt.default(10),
   GEOCODING_BASE_URL: httpUrl.default('https://geocoding-api.open-meteo.com'),
   FORECAST_BASE_URL: httpUrl.default('https://api.open-meteo.com'),
   MARINE_BASE_URL: httpUrl.default('https://marine-api.open-meteo.com'),
@@ -38,6 +40,8 @@ export interface Config {
   dbConnectionTimeoutMs: number;
   /** Postgres `statement_timeout`, set on every pooled connection. */
   dbStatementTimeoutMs: number;
+  /** Most connections this process's pool may open (pool `max`). */
+  dbPoolMax: number;
   openMeteo: {
     geocodingBaseUrl: string;
     forecastBaseUrl: string;
@@ -68,6 +72,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     upstreamTimeoutMs: e.UPSTREAM_TIMEOUT_MS,
     dbConnectionTimeoutMs: e.DB_CONNECTION_TIMEOUT_MS,
     dbStatementTimeoutMs: e.DB_STATEMENT_TIMEOUT_MS,
+    dbPoolMax: e.DB_POOL_MAX,
     openMeteo: {
       geocodingBaseUrl: e.GEOCODING_BASE_URL,
       forecastBaseUrl: e.FORECAST_BASE_URL,

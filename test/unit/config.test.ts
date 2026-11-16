@@ -13,6 +13,7 @@ describe('loadConfig', () => {
       upstreamTimeoutMs: 3000,
       dbConnectionTimeoutMs: 5000,
       dbStatementTimeoutMs: 5000,
+      dbPoolMax: 10,
       openMeteo: {
         geocodingBaseUrl: 'https://geocoding-api.open-meteo.com',
         forecastBaseUrl: 'https://api.open-meteo.com',
@@ -30,6 +31,7 @@ describe('loadConfig', () => {
       UPSTREAM_TIMEOUT_MS: '500',
       DB_CONNECTION_TIMEOUT_MS: '1500',
       DB_STATEMENT_TIMEOUT_MS: '2500',
+      DB_POOL_MAX: '25',
       MARINE_BASE_URL: 'http://localhost:9999',
     });
 
@@ -39,6 +41,7 @@ describe('loadConfig', () => {
     expect(config.upstreamTimeoutMs).toBe(500);
     expect(config.dbConnectionTimeoutMs).toBe(1500);
     expect(config.dbStatementTimeoutMs).toBe(2500);
+    expect(config.dbPoolMax).toBe(25);
     expect(config.openMeteo.marineBaseUrl).toBe('http://localhost:9999');
   });
 
@@ -70,6 +73,19 @@ describe('loadConfig', () => {
       );
     },
   );
+
+  // H4a
+  it('rejects a DB_POOL_MAX of 0: a pool needs at least one connection', () => {
+    expect(() => loadConfig({ DATABASE_URL, DB_POOL_MAX: '0' })).toThrow(
+      /DB_POOL_MAX must be greater than 0/,
+    );
+  });
+
+  it.each(['', '-1', '1.5', 'abc'])('rejects DB_POOL_MAX=%j instead of coercing it', (value) => {
+    expect(() => loadConfig({ DATABASE_URL, DB_POOL_MAX: value })).toThrow(
+      /DB_POOL_MAX must be a non-negative integer/,
+    );
+  });
 
   it('rejects a port out of range', () => {
     expect(() => loadConfig({ DATABASE_URL, PORT: '70000' })).toThrow(/PORT must be a valid port/);

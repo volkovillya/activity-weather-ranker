@@ -18,6 +18,16 @@ describe('database timeouts', () => {
     }
   });
 
+  // H4b
+  it('creates the pool with the configured maximum size', async () => {
+    const { pool } = openTestDb({ poolMax: 3 });
+    try {
+      expect(pool.options.max).toBe(3);
+    } finally {
+      await pool.end();
+    }
+  });
+
   it('cancels a statement that runs longer than statement_timeout', async () => {
     const { pool } = openTestDb({ statementTimeoutMs: 200 });
     try {
@@ -42,6 +52,7 @@ describe('database timeouts', () => {
       databaseUrl: `postgres://ranker:ranker@127.0.0.1:${port}/ranker`,
       connectionTimeoutMs: 200,
       statementTimeoutMs: 5000,
+      poolMax: 1,
     });
     try {
       const started = Date.now();

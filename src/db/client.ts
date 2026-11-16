@@ -10,6 +10,8 @@ export interface DbOptions {
   connectionTimeoutMs: number;
   /** Postgres `statement_timeout` for every query on every pooled connection. */
   statementTimeoutMs: number;
+  /** Most connections the pool may open; callers beyond it wait up to connectionTimeoutMs. */
+  poolMax: number;
 }
 
 /**
@@ -19,6 +21,7 @@ export interface DbOptions {
 export function createDb(options: DbOptions): { db: Db; pool: Pool } {
   const pool = new Pool({
     connectionString: options.databaseUrl,
+    max: options.poolMax,
     connectionTimeoutMillis: options.connectionTimeoutMs,
     statement_timeout: options.statementTimeoutMs,
   });

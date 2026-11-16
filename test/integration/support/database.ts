@@ -20,6 +20,7 @@ export function openTestDb(overrides: Partial<DbOptions> = {}) {
     databaseUrl: TEST_DATABASE_URL,
     connectionTimeoutMs: 5000,
     statementTimeoutMs: 5000,
+    poolMax: 10,
     ...overrides,
   });
 }

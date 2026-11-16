@@ -20,6 +20,7 @@ async function main(): Promise<void> {
     databaseUrl: config.databaseUrl,
     connectionTimeoutMs: config.dbConnectionTimeoutMs,
     statementTimeoutMs: config.dbStatementTimeoutMs,
+    poolMax: config.dbPoolMax,
   });
   const openMeteo = createOpenMeteoClient({
     ...config.openMeteo,
