@@ -36,6 +36,11 @@ Questions I would normally settle with a product manager, and the assumption tak
 ### Storage
 
 - **PostgreSQL 17, run locally with Docker Compose.** SQLite was considered: zero setup for a reviewer, but the refresh logic depends on concurrent writers and conditional upserts, which Postgres lets us test for real. The cost is that running the service and its integration tests needs Docker. The Compose credentials are for local development only.
+- **Three tables.** `locations` (keyed by Open-Meteo's stable geocoding id), `location_lookups` (normalised search text → location) and `daily_forecasts` (one row per location and local date). No table for scores: raw weather is stored and scores are computed on read, so changing a scoring rule never needs a refetch.
+- **Typed columns, not a JSON blob.** Only the values scoring reads are stored, each in a `double precision` column named with its unit, nullable because Open-Meteo can return null. The database enforces the shape, and numbers come back exactly as received.
+- **Dates are `date` columns read as `'YYYY-MM-DD'` strings.** Mapping them to JS `Date` objects would shift a day for zones east of UTC.
+- **Drizzle with plain SQL migrations.** `drizzle-kit generate` writes SQL files that are committed in `drizzle/`; `npm run db:migrate` applies them, and the integration tests apply the same files to a fresh `ranker_test` database before every run. Drizzle was chosen over a heavier ORM because its queries read like the SQL they produce, which matters for the conditional upsert below.
+- **Connection and statement timeouts are configured and tested.** Every pooled connection gets `statement_timeout`, and opening a connection is bounded by `connectionTimeoutMillis`. Tests prove a slow statement is cancelled and a server that never answers the handshake times out. Each timeout bounds one step; there is no single deadline for a whole request.
 
 ### Scoring (`src/domain/`)
 

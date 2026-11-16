@@ -22,6 +22,8 @@ module.exports = {
       testEnvironment: 'node',
       testMatch: ['<rootDir>/test/integration/**/*.test.ts'],
       transform: { '^.+\\.ts$': swc },
+      // Recreates and migrates the `ranker_test` database once per run.
+      globalSetup: '<rootDir>/test/integration/globalSetup.ts',
     },
   ],
 };

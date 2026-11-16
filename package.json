@@ -12,9 +12,13 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "jest --selectProjects unit",
-    "test:integration": "jest --selectProjects integration --runInBand"
+    "test:integration": "jest --selectProjects integration --runInBand",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
+    "drizzle-orm": "0.45.4",
+    "pg": "8.23.1",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -23,6 +27,8 @@
     "@swc/core": "1.16.22",
     "@swc/jest": "0.2.39",
     "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11",
     "eslint": "10.15.0",
     "eslint-config-prettier": "10.1.8",
     "jest": "30.5.2",
