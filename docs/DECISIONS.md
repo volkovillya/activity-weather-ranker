@@ -22,7 +22,9 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **Node 24 LTS, TypeScript in strict mode, CommonJS output.** ESM was considered; CommonJS avoids the Jest/ESM configuration friction and costs nothing in a service this size. `noUncheckedIndexedAccess` is on because most data arrives as arrays from an upstream API.
 - **Jest with `@swc/jest`.** `ts-jest` was considered; it type-checks during tests and is slower. Type checking is a separate `npm run typecheck` step instead, so tests stay fast. Test files import from `@jest/globals` so Jest types never leak into application code.
 - **ESLint with type-aware rules.** Rules such as `no-floating-promises` catch mistakes that matter in concurrent refresh code. Prettier owns formatting; `eslint-config-prettier` keeps the two from conflicting.
+- **Two Jest projects.** `unit` is the default `npm test` and needs no network or database. `integration` (`npm run test:integration`) runs against a real Postgres, in band, because its tests share one database. With no integration tests present it fails rather than passing empty.
 - **Dependencies are pinned to exact versions** so that a reviewer installs exactly what was tested.
+- **Audit policy: runtime dependencies must audit clean; advisories in development tooling are reviewed, not force-fixed.** At the time of writing, `npm audit --omit=dev` reports nothing. The remaining advisories (glob, minimatch, deepmerge) are reached only through Jest and typescript-eslint, which process this repository's own files and configuration, never user input. npm's suggested fix would downgrade Jest to v25; deepmerge has no patched release at all.
 
 ### Configuration
 
