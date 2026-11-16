@@ -115,6 +115,7 @@ export function recordingLogger() {
   const logger: Logger = {
     info: (_fields, event) => events.push(event),
     warn: (_fields, event) => events.push(event),
+    error: (_fields, event) => events.push(event),
   };
   return { logger, events, count: (event: string) => events.filter((e) => e === event).length };
 }

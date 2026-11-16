@@ -24,7 +24,8 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **ESLint with type-aware rules.** Rules such as `no-floating-promises` catch mistakes that matter in concurrent refresh code. Prettier owns formatting; `eslint-config-prettier` keeps the two from conflicting.
 - **Two Jest projects.** `unit` is the default `npm test` and needs no network or database. `integration` (`npm run test:integration`) runs against a real Postgres, in band, because its tests share one database. With no integration tests present it fails rather than passing empty.
 - **Dependencies are pinned to exact versions** so that a reviewer installs exactly what was tested.
-- **Audit policy: runtime dependencies must audit clean; advisories in development tooling are reviewed, not force-fixed.** At the time of writing, `npm audit --omit=dev` reports nothing. The remaining advisories (glob, minimatch, deepmerge) are reached only through Jest and typescript-eslint, which process this repository's own files and configuration, never user input. npm's suggested fix would downgrade Jest to v25; deepmerge has no patched release at all.
+- **Audit policy: runtime dependencies must audit clean; advisories in development tooling are reviewed, not force-fixed.** One runtime exception, below. The development advisories (glob, minimatch, deepmerge) are reached only through Jest and typescript-eslint, which process this repository's own files and configuration, never user input. npm's suggested fix would downgrade Jest to v25; deepmerge has no patched release at all.
+- **Runtime exception: `@graphql-tools/utils` 12.0.1** ([GHSA-c4qx-w738-7hr3](https://github.com/advisories/GHSA-c4qx-w738-7hr3), prototype pollution in `mergeIncrementalResult`). It arrives with `@apollo/server` 5.5.2, the latest release, which itself declares `>=12.0.0 <12.0.2`, so the patched 12.0.2+ is outside the range Apollo supports. The vulnerable function is not reachable here: no installed package other than `@graphql-tools/utils` itself references it (Apollo uses the package only for `makeExecutableSchema`), and this service uses neither `@defer`/`@stream` nor graphql-tools directly. Forcing a newer version against Apollo's declared range was not done; to revisit when Apollo widens it.
 
 ### Configuration
 
@@ -86,6 +87,16 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **Geocoding validates only the first result**, the one we use. Its time zone must be one the runtime knows, because every later date calculation depends on it.
 - **Tests replay real responses.** Six responses were recorded once and are committed byte-for-byte (excluded from Prettier); invalid variants are derived from them in code, so the fixtures stay genuine.
 
+### GraphQL API (`src/graphql/`, `src/index.ts`)
+
+- **Apollo Server, schema-first.** The SDL in `schema.ts` is the contract; a test compares it, type by type and field by field, with the approved one. No type refers back to itself, so query depth is bounded without a depth-limit plugin.
+- **One thin resolver:** validate the input, resolve the location, get the week, rank the activities. All behaviour lives in the services and the domain, which are tested on their own.
+- **Input:** `city` is trimmed and must be 1–100 characters, counted as Unicode characters rather than UTF-16 units (100 emoji are accepted).
+- **Four error codes, fixed wording.** `BAD_USER_INPUT`, `LOCATION_NOT_FOUND`, `UPSTREAM_UNAVAILABLE` and `INTERNAL_SERVER_ERROR`. Messages for upstream failures never include URLs, HTTP statuses or upstream text; those go to the logs. `formatError` keeps the message only for an allow-list of client-facing codes (ours plus Apollo's own request errors, such as an unknown field); everything else becomes a generic internal error and is logged in full. Stack traces are never returned. Errors use GraphQL's usual HTTP 200 with an `errors` array.
+- **The server is created without HTTP** (`createGraphQLServer`), so tests call it directly and one test also serves it over real HTTP; `index.ts` only wires configuration, the database, the client and the services together, listens, and shuts down cleanly on SIGINT/SIGTERM.
+- **Structured logs with pino**: geocoding hits and calls, cache hits and misses, refreshes with their duration, upstream failures and masked internal errors.
+- **`npm run dev` runs `tsx watch src/index.ts`**; `tsx` is a development dependency only. There is no build or start script because deployment is out of scope. A local `.env` is read at startup when present.
+
 ## Known limitations
 
 - **Scoring numbers are unvalidated.** For example, a sunny day at 0 °C scores 68 for outdoor sightseeing, which some would call generous; indoor scoring 50 on a perfect day is a product opinion.
@@ -98,6 +109,7 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **Weather and marine data are replaced together.** A refresh requested later replaces the rows even if its marine call failed and an earlier one's succeeded; surfing then shows "temporarily unavailable" until the retry window passes.
 - **While Open-Meteo is down, each request for an expired city waits for the upstream timeout before falling back.** A failure cooldown is on the cut list.
 - **Deadlocks between overlapping refreshes are designed against, not proven impossible.** Rows are always written in date order so concurrent upserts take row locks in the same order; if Postgres still aborted one, it would surface as an internal error and the next request would retry.
+- **Introspection and Apollo's landing page are on**, as Apollo enables them outside production, so a reviewer can explore the API in a browser; the landing page loads Apollo Sandbox from Apollo's CDN.
 - **There is no end-to-end deadline for a request.** Each upstream call, connection attempt and SQL statement has its own timeout; a request that makes several of them can take longer than any one timeout.
 
 ## Cut, with the reason
