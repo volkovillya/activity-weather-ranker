@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { startStandaloneServer } from '@apollo/server/standalone';
 import { afterAll, beforeEach, describe, expect, it } from '@jest/globals';
 import { buildSchema, isEnumType, isObjectType, isSpecifiedScalarType } from 'graphql';
 import { addDays } from '../../src/domain/dates';
 import { ACTIVITIES } from '../../src/domain/types';
+import { startHttpServer } from '../../src/graphql/http';
 import { createGraphQLServer } from '../../src/graphql/server';
 import { typeDefs } from '../../src/graphql/schema';
 import { createOpenMeteoClient } from '../../src/openmeteo/client';
@@ -347,6 +347,33 @@ describe('errors', () => {
     expect(errors?.[0]?.extensions?.code).toBe('GRAPHQL_VALIDATION_FAILED');
   });
 
+  it.each(['mutation', 'subscription'])(
+    'rejects a %s as a validation error, not as an internal error',
+    async (operation) => {
+      const log = recordingLogger();
+      const { query, calls } = setup();
+      const server = createGraphQLServer({
+        logger: log.logger,
+        locationService: { resolveLocation: () => Promise.reject(new Error('unused')) },
+        forecastService: { getWeek: () => Promise.reject(new Error('unused')) },
+      });
+      const response = await server.executeOperation({ query: `${operation} { reset }` });
+      if (response.body.kind !== 'single') throw new Error('Expected a single result');
+
+      expect(response.body.singleResult.errors).toEqual([
+        expect.objectContaining({
+          message: `This API does not support ${operation} operations.`,
+          extensions: { code: 'GRAPHQL_VALIDATION_FAILED' },
+        }),
+      ]);
+      expect(response.http.status).toBe(400);
+      expect(log.events).not.toContain('graphql.internal_error');
+      // Valid queries are unaffected by the extra rule.
+      expect((await query('Biarritz')).errors).toBeUndefined();
+      expect(calls.length).toBeGreaterThan(0);
+    },
+  );
+
   // Security precondition, not a feature: the @graphql-tools/utils advisory (GHSA-c4qx-w738-7hr3)
   // concerns merging incremental (@defer/@stream) payloads. If an upgrade ever enables
   // incremental delivery, this fails and the exposure analysis in docs/DECISIONS.md must be redone.
@@ -470,22 +497,154 @@ describe('named outcomes', () => {
 // ---------- Over real HTTP ----------
 
 describe('HTTP', () => {
-  it('serves a query over HTTP', async () => {
-    const { server } = setup();
-    const { url } = await startStandaloneServer(server, { listen: { port: 0 } });
+  /** Starts the real Express server on a free port and stops it (draining HTTP) afterwards. */
+  async function withHttp(
+    run: (url: string, log: ReturnType<typeof recordingLogger>) => Promise<void>,
+  ) {
+    const { server, log } = setup();
+    const { url } = await startHttpServer(server, { port: 0, logger: log.logger });
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: QUERY, variables: { city: 'Biarritz' } }),
-      });
+      await run(url, log);
+    } finally {
+      await server.stop();
+    }
+  }
+
+  const post = (url: string, body: string, contentType = 'application/json') =>
+    fetch(url, { method: 'POST', headers: { 'content-type': contentType }, body });
+
+  /** Nothing that only the server should know: stack frames, file paths, exception names. */
+  const LEAK = /\/Users\/|node_modules|\.js:\d|\bat \w|SyntaxError|stack|<html/i;
+
+  it('serves a query over HTTP', async () => {
+    await withHttp(async (url) => {
+      const response = await post(
+        url,
+        JSON.stringify({ query: QUERY, variables: { city: 'Biarritz' } }),
+      );
       const body = (await response.json()) as { data: { activityRankings: Rankings } };
 
       expect(response.status).toBe(200);
       expect(body.data.activityRankings.location.name).toBe('Biarritz');
       expect(body.data.activityRankings.activities).toHaveLength(4);
-    } finally {
-      await server.stop();
-    }
+    });
+  });
+
+  it('answers a malformed JSON body with a JSON error and no internal details', async () => {
+    await withHttp(async (url, log) => {
+      const response = await post(url, '{"query": ');
+      const text = await response.text();
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get('content-type')).toMatch(/^application\/json/);
+      expect(JSON.parse(text)).toEqual({
+        errors: [
+          { message: 'The request body is not valid JSON.', extensions: { code: 'BAD_REQUEST' } },
+        ],
+      });
+      expect(text).not.toMatch(LEAK);
+      expect(log.events).toContain('http.bad_request');
+    });
+  });
+
+  it('answers an unsupported body encoding with a JSON error and no internal details', async () => {
+    await withHttp(async (url) => {
+      const response = await post(
+        url,
+        '{"query":"{ __typename }"}',
+        'application/json; charset=latin1',
+      );
+      const text = await response.text();
+
+      expect(response.status).toBe(415);
+      expect(JSON.parse(text)).toEqual({
+        errors: [
+          {
+            message: 'The request body encoding is not supported.',
+            extensions: { code: 'BAD_REQUEST' },
+          },
+        ],
+      });
+      expect(text).not.toMatch(LEAK);
+    });
+  });
+
+  it('keeps the 50 MB request limit', async () => {
+    await withHttp(async (url) => {
+      // One byte over the limit. body-parser rejects it from the declared length, then drains
+      // the rest of the upload before answering, so the whole body is sent as a client would.
+      const response = await post(url, 'x'.repeat(50 * 1024 * 1024 + 1));
+
+      expect(response.status).toBe(413);
+      expect(await response.json()).toEqual({
+        errors: [
+          { message: 'The request body is too large.', extensions: { code: 'BAD_REQUEST' } },
+        ],
+      });
+
+      // ...while a 1 MB request (ten times Express's default 100 KB limit) is still accepted.
+      const padded = JSON.stringify({
+        query: '{ __typename }',
+        extensions: { padding: 'x'.repeat(1024 * 1024) },
+      });
+      expect((await post(url, padded)).status).toBe(200);
+    });
+  });
+
+  it('keeps CORS open to every origin, including preflight requests', async () => {
+    await withHttp(async (url) => {
+      const preflight = await fetch(url, {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://example.test',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'content-type',
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe('*');
+      expect(preflight.headers.get('access-control-allow-methods')).toContain('POST');
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { origin: 'https://example.test', 'content-type': 'application/json' },
+        body: JSON.stringify({ query: '{ __typename }' }),
+      });
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('x-powered-by')).toBeNull();
+    });
+  });
+
+  it('still blocks CSRF-prone requests and still serves the landing page', async () => {
+    await withHttp(async (url) => {
+      const simple = await post(url, JSON.stringify({ query: '{ __typename }' }), 'text/plain');
+      expect(simple.status).toBe(400);
+      expect(await simple.text()).toContain('Cross-Site Request Forgery');
+
+      const page = await fetch(url, { headers: { accept: 'text/html' } });
+      expect(page.status).toBe(200);
+      expect(page.headers.get('content-type')).toMatch(/^text\/html/);
+    });
+  });
+
+  it('rejects a mutation as a validation error over HTTP', async () => {
+    await withHttp(async (url) => {
+      const response = await post(url, JSON.stringify({ query: 'mutation { reset }' }));
+      const body = (await response.json()) as { errors: { message: string; extensions: object }[] };
+
+      expect(response.status).toBe(400);
+      expect(body.errors[0]).toMatchObject({
+        message: 'This API does not support mutation operations.',
+        extensions: { code: 'GRAPHQL_VALIDATION_FAILED' },
+      });
+    });
+  });
+
+  it('stops listening when the server is stopped', async () => {
+    const { server, log } = setup();
+    const { url } = await startHttpServer(server, { port: 0, logger: log.logger });
+    await server.stop();
+
+    await expect(fetch(url)).rejects.toThrow();
   });
 });

@@ -1,7 +1,7 @@
-import { startStandaloneServer } from '@apollo/server/standalone';
 import pino from 'pino';
 import { loadConfig } from './config';
 import { createDb } from './db/client';
+import { startHttpServer } from './graphql/http';
 import { createGraphQLServer } from './graphql/server';
 import { createOpenMeteoClient } from './openmeteo/client';
 import { createForecastService } from './services/forecastService';
@@ -43,7 +43,7 @@ async function main(): Promise<void> {
     }),
   });
 
-  const { url } = await startStandaloneServer(server, { listen: { port: config.port } });
+  const { url } = await startHttpServer(server, { port: config.port, logger });
   logger.info({ url }, 'server.started');
 
   const shutdown = (signal: string) => {
