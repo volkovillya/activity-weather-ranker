@@ -134,6 +134,9 @@ These entries were added after the six implementation phases, following a review
   - **How it counts.** It counts distinct response keys and follows fragment spreads and inline fragments. Fields under the same key are merged by GraphQL and resolved once. `@skip` and `@include` are ignored, so the count can only err high.
   - **Why one.** With one city per request, any per-request limit at a gateway maps directly to upstream cost: at most three calls. A limit of five was considered; it would weaken every such limit five-fold for a use case the brief does not mention (assumption 9).
   - **Scope.** The rule covers `activityRankings` only. A data field added to `Query` later would need the same treatment.
+- **Request bodies are limited to 100 KB, Express's default.** This reverses the earlier choice to keep the standalone server's 50 MB limit (see "HTTP through Apollo's official Express integration" above).
+  - **Why.** A query for this schema is a few kilobytes. A 50 MB body is buffered in memory and parsed synchronously, so a few such requests can block the event loop for every client. A large body was also the only way to fit thousands of aliases into one request.
+  - **Error.** A larger body still gets the existing JSON error (`BAD_REQUEST`, HTTP 413).
 
 ## Known limitations
 

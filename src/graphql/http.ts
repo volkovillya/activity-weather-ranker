@@ -7,8 +7,11 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import type { Logger } from '../services/logger';
 
-/** The same limit Apollo's standalone server uses. */
-const BODY_LIMIT = '50mb';
+/**
+ * Express's own default. A query for this schema is a few kilobytes; a larger limit only lets
+ * a client make the server buffer and synchronously parse a huge body.
+ */
+const BODY_LIMIT = '100kb';
 
 /**
  * Serves the GraphQL server over HTTP with Apollo's official Express integration: CORS for

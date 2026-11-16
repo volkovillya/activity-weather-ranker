@@ -677,24 +677,30 @@ describe('HTTP', () => {
     });
   });
 
-  it('keeps the 50 MB request limit', async () => {
+  // H2
+  it('limits request bodies to 100 KB', async () => {
+    const LIMIT = 100 * 1024;
     await withHttp(async (url) => {
       // One byte over the limit. body-parser rejects it from the declared length, then drains
       // the rest of the upload before answering, so the whole body is sent as a client would.
-      const response = await post(url, 'x'.repeat(50 * 1024 * 1024 + 1));
+      const response = await post(url, 'x'.repeat(LIMIT + 1));
+      const text = await response.text();
 
       expect(response.status).toBe(413);
-      expect(await response.json()).toEqual({
+      expect(JSON.parse(text)).toEqual({
         errors: [
           { message: 'The request body is too large.', extensions: { code: 'BAD_REQUEST' } },
         ],
       });
+      expect(text).not.toMatch(LEAK);
 
-      // ...while a 1 MB request (ten times Express's default 100 KB limit) is still accepted.
+      // ...while a request just under the limit is still accepted.
+      const wrapper = JSON.stringify({ query: '{ __typename }', extensions: { padding: '' } });
       const padded = JSON.stringify({
         query: '{ __typename }',
-        extensions: { padding: 'x'.repeat(1024 * 1024) },
+        extensions: { padding: 'x'.repeat(LIMIT - wrapper.length) },
       });
+      expect(Buffer.byteLength(padded)).toBe(LIMIT);
       expect((await post(url, padded)).status).toBe(200);
     });
   });
