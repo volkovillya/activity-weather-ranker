@@ -42,6 +42,12 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **Drizzle with plain SQL migrations.** `drizzle-kit generate` writes SQL files that are committed in `drizzle/`; `npm run db:migrate` applies them, and the integration tests apply the same files to a fresh `ranker_test` database before every run. Drizzle was chosen over a heavier ORM because its queries read like the SQL they produce, which matters for the conditional upsert below.
 - **Connection and statement timeouts are configured and tested.** Every pooled connection gets `statement_timeout`, and opening a connection is bounded by `connectionTimeoutMillis`. Tests prove a slow statement is cancelled and a server that never answers the handshake times out. Each timeout bounds one step; there is no single deadline for a whole request.
 
+### Locations (`src/services/locationService.ts`)
+
+- **A known search never geocodes again.** The search text is normalised (Unicode NFC, trimmed, single spaces, lower case), so "Kraków ", "kraków" and "KRAKÓW" share one lookup row.
+- **The persisted lookup decides what a search means.** Two first requests for the same text can geocode at the same time, and the geocoder can rank results differently between two calls. Both inserts use `ON CONFLICT DO NOTHING`, and each request then reads the lookup back and returns the location it points to, so every caller — now and later — gets the same place. A location row inserted by the losing request stays unused (cleanup is on the cut list).
+- **"Not found" and "geocoder down" are different errors.** A geocoding miss stores nothing and is reported as not found; a geocoding failure is reported as upstream unavailable. A search that is already stored does not need the geocoder at all, even while it is down.
+
 ### Scoring (`src/domain/`)
 
 - **`score = round(100 × gate × quality)`.** _Gates_ answer "can you do it at all" (snow depth, wave height, a downpour, a gale): 1 in normal conditions, falling to 0 only at extremes, and the lowest gate counts. _Quality_ is a weighted mean of factors that answer "how pleasant is it". Two simpler formulas were rejected:
