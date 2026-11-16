@@ -11,6 +11,8 @@ describe('loadConfig', () => {
       forecastTtlSeconds: 3600,
       marineRetrySeconds: 300,
       upstreamTimeoutMs: 3000,
+      dbConnectionTimeoutMs: 5000,
+      dbStatementTimeoutMs: 5000,
       openMeteo: {
         geocodingBaseUrl: 'https://geocoding-api.open-meteo.com',
         forecastBaseUrl: 'https://api.open-meteo.com',
@@ -26,6 +28,8 @@ describe('loadConfig', () => {
       FORECAST_TTL_SECONDS: '60',
       MARINE_RETRY_SECONDS: '30',
       UPSTREAM_TIMEOUT_MS: '500',
+      DB_CONNECTION_TIMEOUT_MS: '1500',
+      DB_STATEMENT_TIMEOUT_MS: '2500',
       MARINE_BASE_URL: 'http://localhost:9999',
     });
 
@@ -33,6 +37,8 @@ describe('loadConfig', () => {
     expect(config.forecastTtlSeconds).toBe(60);
     expect(config.marineRetrySeconds).toBe(30);
     expect(config.upstreamTimeoutMs).toBe(500);
+    expect(config.dbConnectionTimeoutMs).toBe(1500);
+    expect(config.dbStatementTimeoutMs).toBe(2500);
     expect(config.openMeteo.marineBaseUrl).toBe('http://localhost:9999');
   });
 
@@ -56,11 +62,14 @@ describe('loadConfig', () => {
     },
   );
 
-  it('rejects a zero upstream timeout', () => {
-    expect(() => loadConfig({ DATABASE_URL, UPSTREAM_TIMEOUT_MS: '0' })).toThrow(
-      /UPSTREAM_TIMEOUT_MS must be greater than 0/,
-    );
-  });
+  it.each(['UPSTREAM_TIMEOUT_MS', 'DB_CONNECTION_TIMEOUT_MS', 'DB_STATEMENT_TIMEOUT_MS'])(
+    'rejects a zero %s (0 would mean "wait forever")',
+    (name) => {
+      expect(() => loadConfig({ DATABASE_URL, [name]: '0' })).toThrow(
+        new RegExp(`${name} must be greater than 0`),
+      );
+    },
+  );
 
   it('rejects a port out of range', () => {
     expect(() => loadConfig({ DATABASE_URL, PORT: '70000' })).toThrow(/PORT must be a valid port/);

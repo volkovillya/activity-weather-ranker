@@ -20,6 +20,9 @@ const EnvSchema = z.object({
   FORECAST_TTL_SECONDS: nonNegativeInt.default(3600),
   MARINE_RETRY_SECONDS: nonNegativeInt.default(300),
   UPSTREAM_TIMEOUT_MS: positiveInt.default(3000),
+  // Positive on purpose: in Postgres and node-postgres, 0 means "wait forever".
+  DB_CONNECTION_TIMEOUT_MS: positiveInt.default(5000),
+  DB_STATEMENT_TIMEOUT_MS: positiveInt.default(5000),
   GEOCODING_BASE_URL: httpUrl.default('https://geocoding-api.open-meteo.com'),
   FORECAST_BASE_URL: httpUrl.default('https://api.open-meteo.com'),
   MARINE_BASE_URL: httpUrl.default('https://marine-api.open-meteo.com'),
@@ -31,6 +34,10 @@ export interface Config {
   forecastTtlSeconds: number;
   marineRetrySeconds: number;
   upstreamTimeoutMs: number;
+  /** Time allowed to open a database connection (pool `connectionTimeoutMillis`). */
+  dbConnectionTimeoutMs: number;
+  /** Postgres `statement_timeout`, set on every pooled connection. */
+  dbStatementTimeoutMs: number;
   openMeteo: {
     geocodingBaseUrl: string;
     forecastBaseUrl: string;
@@ -59,6 +66,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     forecastTtlSeconds: e.FORECAST_TTL_SECONDS,
     marineRetrySeconds: e.MARINE_RETRY_SECONDS,
     upstreamTimeoutMs: e.UPSTREAM_TIMEOUT_MS,
+    dbConnectionTimeoutMs: e.DB_CONNECTION_TIMEOUT_MS,
+    dbStatementTimeoutMs: e.DB_STATEMENT_TIMEOUT_MS,
     openMeteo: {
       geocodingBaseUrl: e.GEOCODING_BASE_URL,
       forecastBaseUrl: e.FORECAST_BASE_URL,
