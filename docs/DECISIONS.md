@@ -1,6 +1,6 @@
 # Decision log
 
-What was decided, what else was considered, and the trade-off. Entries are added in the same commit as the change they explain; the newest are at the bottom of each section.
+What was decided, what else was considered, and the trade-off. Entries are grouped by topic, and each was added in the same commit as the change it explains.
 
 ## Assumptions and open product questions
 
@@ -37,7 +37,7 @@ Questions I would normally settle with a product manager, and the assumption tak
 
 - **Environment variables validated with zod at startup**, with one error that lists every invalid variable and never echoes values (a malformed `DATABASE_URL` would otherwise print its password).
 - **Integers must be plain digit strings.** `z.coerce.number()` was rejected: it turns an empty string into `0`, so an accidental `FORECAST_TTL_SECONDS=` would silently disable caching.
-- **Defaults:** forecast TTL 1 hour (Open-Meteo's models update every 1–6 hours), marine retry window 5 minutes, upstream timeout 3 seconds. All three are judgment values, not measured.
+- **Defaults:** forecast TTL 1 hour (Open-Meteo's models update every 1–6 hours), marine retry window 5 minutes, upstream timeout 3 seconds, database connection and statement timeouts 5 seconds each. All are judgment values, not measured.
 - **Open-Meteo base URLs are configuration**, so tests and outage demos can point the service at a fake or unreachable host without code changes.
 
 ### Storage
@@ -130,9 +130,12 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **Hourly / time-of-day scores** — daily granularity is enough to rank days.
 - **Scheduled pre-warming of popular cities** — the set of cities is unbounded; refreshing on demand costs nothing for cities nobody asks about.
 - **Cross-instance refresh lock** — duplicate refreshes from several instances are wasteful but correct.
+- **Keeping the previous wave data when a marine request fails** — it would need a second freshness timestamp per row; the retry window restores marine data within minutes.
+- **A snapshot id per refresh, and the model-run time as the freshness signal** — see the limits of `fetchedAt` above; neither changes what a user sees.
 - **Failure cooldown / circuit breaker, retries with backoff** — upstream timeouts already bound each call; more machinery is not justified at this scale.
 - **Negative caching of unknown cities** — a repeated typo costs one geocoding call each time; acceptable here.
 - **Cleanup of old forecast rows and unused locations** — storage growth is negligible for this exercise.
 - **Authentication and rate limiting** — the main operational risk of an open endpoint, stated as a known limitation instead.
 - **Metrics and tracing** — structured logs are enough to see cache hits and upstream calls.
+- **A production build, Dockerfile and deployment** — `npm run dev` is enough to run and review the service.
 - **GraphQL code generation, contract tests** — one query with one consumer; hand-written types are smaller.
