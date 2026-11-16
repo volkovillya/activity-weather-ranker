@@ -52,6 +52,22 @@ describe('declared inputs', () => {
   );
 });
 
+// Domain invariant: every value that reaches scoring is finite. Upstream validation (the
+// Open-Meteo client) is responsible for rejecting such data; scoring refuses to hide it.
+describe('non-finite inputs', () => {
+  it.each(
+    SCORERS.flatMap((s) =>
+      s.inputs.flatMap((field) =>
+        [NaN, Infinity, -Infinity].map((value) => [s.activity, field, value, s] as const),
+      ),
+    ),
+  )('%s refuses %s = %p instead of scoring it', (_, field, value, scorer) => {
+    expect(() => scorer.score(makeDay({ [field]: value }))).toThrow(
+      `${field} is not a finite number`,
+    );
+  });
+});
+
 // S6
 describe('availability', () => {
   it('makes every activity available on a complete week, with 7 days and no reason', () => {

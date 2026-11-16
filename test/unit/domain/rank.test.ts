@@ -33,6 +33,10 @@ describe('rankActivities', () => {
     expect(rankActivities(week).map((r) => r.activity)).toEqual([...ACTIVITIES]);
   });
 
+  it('rejects an empty week instead of returning contradictory availability', () => {
+    expect(() => rankActivities([])).toThrow('at least one day');
+  });
+
   it('returns the days in input (chronological) order with a rank and the score', () => {
     const skiing = rankActivities(week)[0]!;
 

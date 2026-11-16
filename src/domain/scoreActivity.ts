@@ -29,24 +29,35 @@ export interface ActivityModel {
 /**
  * Rounds halves up. The epsilon absorbs floating-point error: 100 × 0.5 × 0.79 evaluates to
  * 39.49999999999999, which plain Math.round would turn into 39 instead of 40.
+ * Trade-off: a true value less than 1e-9 below a half would also round up. With curve points
+ * and Open-Meteo values of at most two decimals, none was found on a grid of ~414 000 inputs
+ * checked against exact arithmetic (see docs/DECISIONS.md).
  */
 export function roundScore(x: number): number {
   return Math.round(x + 1e-9);
 }
 
-/** At most one decimal, without trailing zeros: 20 → "20", 9.87 → "9.9". */
+/**
+ * At most two decimals, without trailing zeros: 20 → "20", 0.25 → "0.25", 9.876 → "9.88".
+ * Open-Meteo reports values with up to two decimals, so they are shown exactly. One decimal
+ * was not enough: 0.79 m would read "wave height 0.8 m", the height at which the gate opens.
+ */
 export function formatValue(x: number): string {
-  return String(Math.round(x * 10) / 10);
+  return String(Math.round(x * 100) / 100);
 }
 
 /**
- * Reads an input that scoring needs. A null here means availability was not checked first,
- * which is a bug, so it fails loudly instead of scoring with a made-up value.
+ * Reads an input that scoring needs. Null means availability was not checked first; a
+ * non-finite number means invalid data got past the upstream validation. Both are bugs, so
+ * they fail loudly instead of producing a plausible-looking score.
  */
 export function required(day: DailyWeather, field: WeatherField): number {
   const value = day[field];
   if (value === null) {
     throw new Error(`${field} is missing on ${day.date}; the activity should be unavailable`);
+  }
+  if (!Number.isFinite(value)) {
+    throw new Error(`${field} is not a finite number on ${day.date}: ${value}`);
   }
   return value;
 }

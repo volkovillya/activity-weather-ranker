@@ -102,6 +102,25 @@ describe('roundScore', () => {
     expect(roundScore(33.64)).toBe(34);
     expect(roundScore(33.4)).toBe(33);
   });
+
+  it.each<[number, number]>([
+    [39.4999999, 39], // genuinely 1e-7 below the half
+    [39.49999999, 39], // genuinely 1e-8 below the half: still outside the 1e-9 epsilon
+    [39.5, 40], // the half itself
+    [39.50000001, 40], // just above the half
+    [0, 0],
+    [0.49, 0],
+    [0.5, 1],
+    [99.49, 99],
+    [99.5, 100],
+    [100, 100],
+  ])('roundScore(%p) is %p', (input, expected) => {
+    expect(roundScore(input)).toBe(expected);
+  });
+
+  it('documents the trade-off: a value within 1e-9 below a half also rounds up', () => {
+    expect(roundScore(39.4999999995)).toBe(40);
+  });
 });
 
 // S2
@@ -257,13 +276,42 @@ describe('reasons', () => {
     ]);
   });
 
-  it('formats values with at most one decimal', () => {
+  it('shows values with up to two decimals, as precise as Open-Meteo reports them', () => {
     expect(surfing.score(surfDay(0.25, 9.87, 12.04)).reasons).toEqual([
-      'Limited by wave height 0.3 m',
-      'swell period 9.9 s',
-      'wave height 0.3 m',
-      'wind 12 km/h',
+      'Limited by wave height 0.25 m',
+      'swell period 9.87 s',
+      'wave height 0.25 m',
+      'wind 12.04 km/h',
     ]);
+  });
+
+  // With one decimal these read "0.8 m", "2.5 m", "1 mm" and "30 mm": the very values at which
+  // the gate is fully open, contradicting the "Limited by" in front of them.
+  it.each<[string, ActivityScorer, Partial<DailyWeather>, string]>([
+    ['wave 0.79 m', surfing, { waveHeightMaxM: 0.79 }, 'Limited by wave height 0.79 m'],
+    ['wave 2.51 m', surfing, { waveHeightMaxM: 2.51 }, 'Limited by wave height 2.51 m'],
+    [
+      'rain 1.04 mm',
+      outdoorSightseeing,
+      { precipitationMm: 1.04 },
+      'Limited by precipitation 1.04 mm',
+    ],
+    [
+      'rain 30.04 mm',
+      indoorSightseeing,
+      { precipitationMm: 30.04 },
+      'Limited by precipitation 30.04 mm',
+    ],
+  ])('near a threshold (%s) the reason shows the real value', (_, scorer, overrides, expected) => {
+    const result = scorer.score(makeDay(overrides));
+    expect(result.gate).toBeLessThan(1);
+    expect(result.reasons[0]).toBe(expected);
+  });
+
+  it('does not add "Limited by" just below a threshold where the gate is still fully open', () => {
+    expect(outdoorSightseeing.score(makeDay({ precipitationMm: 0.96 })).reasons).not.toContainEqual(
+      expect.stringContaining('Limited by'),
+    );
   });
 
   it('explains indoor scores with travel limits and the outdoor score', () => {

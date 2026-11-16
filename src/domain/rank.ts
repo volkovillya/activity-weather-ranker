@@ -19,8 +19,12 @@ export function assignRanks(scores: readonly number[]): number[] {
 /**
  * Turns a week of stored weather (chronological) into the four activity rankings.
  * Days keep the order they were given in; each carries its score, rank and reasons.
+ * The caller supplies a complete week (the forecast service never serves a partial one);
+ * an empty week is rejected because every availability rule would be vacuously true.
  */
 export function rankActivities(week: readonly DailyWeather[]): ActivityRanking[] {
+  if (week.length === 0) throw new Error('rankActivities needs at least one day');
+
   return SCORERS.map((scorer) => {
     const reason = checkAvailability(scorer, week);
     if (reason !== null) {
