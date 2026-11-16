@@ -1,3 +1,5 @@
 package-lock.json
+# Recorded upstream responses stay byte-for-byte as received.
+test/fixtures/
 dist/
 coverage/
