@@ -1,12 +1,6 @@
 import { outdoorModel } from './outdoor';
-import {
-  evaluateGates,
-  formatValue,
-  required,
-  roundScore,
-  scoreActivity,
-  type Measure,
-} from './scoreActivity';
+import { precipitationMm, precipitationNote, windKmh, windNote } from './readings';
+import { evaluateGates, roundScore, scoreActivity, type Measure } from './scoreActivity';
 import type { ActivityScorer, DailyWeather } from './types';
 
 /** Indoor sightseeing is always possible, but getting there in a storm is not pleasant. */
@@ -16,16 +10,16 @@ const travelGates: readonly Measure[] = [
       [60, 1],
       [100, 0.2],
     ],
-    value: (d) => required(d, 'windSpeedMaxKmh'),
-    note: (d) => `wind ${formatValue(required(d, 'windSpeedMaxKmh'))} km/h`,
+    value: windKmh,
+    note: windNote,
   },
   {
     curve: [
       [30, 1],
       [80, 0.3],
     ],
-    value: (d) => required(d, 'precipitationMm'),
-    note: (d) => `precipitation ${formatValue(required(d, 'precipitationMm'))} mm`,
+    value: precipitationMm,
+    note: precipitationNote,
   },
 ];
 

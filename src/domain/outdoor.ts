@@ -1,9 +1,13 @@
-import { formatValue, required, scoreActivity, type ActivityModel } from './scoreActivity';
+import {
+  precipitationMm,
+  precipitationNote,
+  tempMaxC,
+  tempNote,
+  windKmh,
+  windNote,
+} from './readings';
+import { required, scoreActivity, type ActivityModel } from './scoreActivity';
 import type { ActivityScorer, DailyWeather } from './types';
-
-const tempC = (d: DailyWeather) => required(d, 'tempMaxC');
-const precipitationMm = (d: DailyWeather) => required(d, 'precipitationMm');
-const windKmh = (d: DailyWeather) => required(d, 'windSpeedMaxKmh');
 
 /** Share of daylight with sunshine, 0–1. Zero daylight (polar night) counts as no sunshine. */
 function sunshineShare(d: DailyWeather): number {
@@ -11,9 +15,6 @@ function sunshineShare(d: DailyWeather): number {
   const daylight = required(d, 'daylightS');
   return daylight > 0 ? Math.min(1, sunshine / daylight) : 0;
 }
-
-const tempNote = (d: DailyWeather) => `max temperature ${formatValue(tempC(d))} °C`;
-const windNote = (d: DailyWeather) => `wind ${formatValue(windKmh(d))} km/h`;
 
 export const outdoorModel: ActivityModel = {
   inputs: ['tempMaxC', 'precipitationMm', 'sunshineS', 'daylightS', 'windSpeedMaxKmh'],
@@ -27,7 +28,7 @@ export const outdoorModel: ActivityModel = {
         [60, 0],
       ],
       value: precipitationMm,
-      note: (d) => `precipitation ${formatValue(precipitationMm(d))} mm`,
+      note: precipitationNote,
     },
     {
       // Dangerous cold or heat.
@@ -37,7 +38,7 @@ export const outdoorModel: ActivityModel = {
         [33, 1],
         [42, 0],
       ],
-      value: tempC,
+      value: tempMaxC,
       note: tempNote,
     },
     {
@@ -59,7 +60,7 @@ export const outdoorModel: ActivityModel = {
         [26, 1],
         [33, 0.4],
       ],
-      value: tempC,
+      value: tempMaxC,
       note: tempNote,
     },
     {

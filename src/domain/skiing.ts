@@ -1,13 +1,10 @@
+import { tempMaxC, tempNote, windKmh, windNote } from './readings';
 import { formatValue, required, scoreActivity, type ActivityModel } from './scoreActivity';
 import type { ActivityScorer, DailyWeather } from './types';
 
 // Snow depth is stored in metres (as Open-Meteo returns it); the curves below use centimetres.
 const snowDepthCm = (d: DailyWeather) => required(d, 'snowDepthM') * 100;
 const freshSnowCm = (d: DailyWeather) => required(d, 'snowfallCm');
-const tempC = (d: DailyWeather) => required(d, 'tempMaxC');
-const windKmh = (d: DailyWeather) => required(d, 'windSpeedMaxKmh');
-
-const windNote = (d: DailyWeather) => `wind ${formatValue(windKmh(d))} km/h`;
 
 /** Thresholds and weights are judgment calls for a recreational skier (see docs/DECISIONS.md). */
 export const skiingModel: ActivityModel = {
@@ -53,8 +50,8 @@ export const skiingModel: ActivityModel = {
         [4, 0.5],
         [10, 0.2],
       ],
-      value: tempC,
-      note: (d) => `max temperature ${formatValue(tempC(d))} °C`,
+      value: tempMaxC,
+      note: tempNote,
     },
     {
       weight: 0.3,

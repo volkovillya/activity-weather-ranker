@@ -1,12 +1,11 @@
+import { windKmh, windNote } from './readings';
 import { formatValue, required, scoreActivity, type ActivityModel } from './scoreActivity';
 import type { ActivityScorer, DailyWeather } from './types';
 
 const waveHeightM = (d: DailyWeather) => required(d, 'waveHeightMaxM');
 const swellPeriodS = (d: DailyWeather) => required(d, 'swellPeriodMaxS');
-const windKmh = (d: DailyWeather) => required(d, 'windSpeedMaxKmh');
 
 const waveHeightNote = (d: DailyWeather) => `wave height ${formatValue(waveHeightM(d))} m`;
-const windNote = (d: DailyWeather) => `wind ${formatValue(windKmh(d))} km/h`;
 
 /**
  * Judged from the offshore wave model near the town, for a recreational surfer.
