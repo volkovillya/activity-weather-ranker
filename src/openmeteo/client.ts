@@ -220,6 +220,13 @@ function dailyParams(
   const last = dates[dates.length - 1];
   if (first === undefined || last === undefined) throw new Error('At least one date is required');
 
+  // Coordinates come from our own stored locations, so a bad one is a bug, not an upstream
+  // failure: refuse before sending anything (String(NaN) would otherwise go out as "NaN").
+  const { latitude, longitude } = point;
+  if (!isInRange(latitude, -90, 90) || !isInRange(longitude, -180, 180)) {
+    throw new RangeError(`Invalid coordinates: latitude ${latitude}, longitude ${longitude}`);
+  }
+
   return {
     latitude: String(point.latitude),
     longitude: String(point.longitude),
@@ -305,6 +312,11 @@ async function reason(response: Response): Promise<string> {
     // An error body that is not JSON adds nothing worth reporting.
   }
   return '';
+}
+
+/** False for NaN and ±Infinity as well as for finite values outside [min, max]. */
+function isInRange(value: number, min: number, max: number): boolean {
+  return Number.isFinite(value) && value >= min && value <= max;
 }
 
 function errorMessage(error: unknown): string {

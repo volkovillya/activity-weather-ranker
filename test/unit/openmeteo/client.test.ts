@@ -159,11 +159,67 @@ describe('geocode', () => {
     ['an unknown time zone', (r) => (r.timezone = 'Mars/Olympus_Mons'), /time zone/],
     ['no coordinates', (r) => delete r.latitude, /latitude/],
     ['a latitude out of range', (r) => (r.latitude = 123), /latitude/],
+    ['a latitude just below -90', (r) => (r.latitude = -90.0001), /latitude/],
+    ['a longitude out of range', (r) => (r.longitude = 200), /longitude/],
+    ['a longitude just below -180', (r) => (r.longitude = -180.0001), /longitude/],
+    ['a coordinate sent as a string', (r) => (r.longitude = '-1.55684'), /longitude/],
     ['an id that is not a positive integer', (r) => (r.id = -4), /id/],
   ])('fails with invalid_body when the first result has %s', async (_, edit, message) => {
     const body = editedFirstResult(edit);
     const { client } = setup(() => reply(body));
     await expectUpstreamError(client.geocode('Biarritz'), 'geocoding', 'invalid_body', message);
+  });
+
+  it.each([
+    ['latitude', '"latitude":43.48055', '"latitude":1e999'],
+    ['longitude', '"longitude":-1.55684', '"longitude":-1e999'],
+  ])('fails with invalid_body when the %s is non-finite (JSON 1e999)', async (field, from, to) => {
+    const body = fixture('geocode-biarritz.json').replace(from, to);
+    expect(body).toContain(to);
+    const { client } = setup(() => reply(body));
+    await expectUpstreamError(client.geocode('Biarritz'), 'geocoding', 'invalid_body', field);
+  });
+
+  it('accepts coordinates exactly on the limits', async () => {
+    const body = editedFirstResult((r) => {
+      r.latitude = -90;
+      r.longitude = 180;
+    });
+    const { client } = setup(() => reply(body));
+    await expect(client.geocode('South Pole')).resolves.toMatchObject({
+      location: { latitude: -90, longitude: 180 },
+    });
+  });
+});
+
+describe('coordinates sent to the forecast and marine APIs', () => {
+  const invalidPoints: [string, number, number][] = [
+    ['NaN latitude', NaN, 10],
+    ['NaN longitude', 10, NaN],
+    ['infinite latitude', Infinity, 10],
+    ['negative infinite longitude', 10, -Infinity],
+    ['latitude above 90', 90.0001, 10],
+    ['longitude below -180', 10, -180.5],
+  ];
+
+  it.each(invalidPoints)(
+    'refuses %s before sending any request',
+    async (_, latitude, longitude) => {
+      const { client, calls } = setup(() => reply(fixture('forecast-biarritz.json')));
+      const point = { latitude, longitude, timezone: 'Europe/Paris' };
+
+      await expect(client.fetchWeather(point, WEEK)).rejects.toThrow(RangeError);
+      await expect(client.fetchMarine(point, WEEK)).rejects.toThrow(/Invalid coordinates/);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it('sends coordinates exactly on the limits', async () => {
+    const { client, calls } = setup(() => reply(fixture('marine-biarritz.json')));
+    await client.fetchMarine({ latitude: 90, longitude: -180, timezone: 'Europe/Paris' }, WEEK);
+
+    expect(calls[0]!.searchParams.get('latitude')).toBe('90');
+    expect(calls[0]!.searchParams.get('longitude')).toBe('-180');
   });
 });
 
