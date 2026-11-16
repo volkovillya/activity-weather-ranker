@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from '@jest/globals';
-import { buildSchema, isEnumType, isObjectType, isSpecifiedScalarType } from 'graphql';
+import {
+  buildSchema,
+  getIntrospectionQuery,
+  isEnumType,
+  isObjectType,
+  isSpecifiedScalarType,
+} from 'graphql';
 import { addDays } from '../../src/domain/dates';
 import { ACTIVITIES } from '../../src/domain/types';
 import { startHttpServer } from '../../src/graphql/http';
@@ -391,6 +397,108 @@ describe('errors', () => {
       }),
     );
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ---------- One city per operation (post-review hardening) ----------
+
+describe('one city per operation', () => {
+  /** Runs a document and reports its errors, HTTP status and the upstream calls it caused. */
+  async function run(document: string, operationName?: string) {
+    const { server, calls } = setup();
+    const response = await server.executeOperation({ query: document, operationName });
+    if (response.body.kind !== 'single') throw new Error('Expected a single result');
+    return { errors: response.body.singleResult.errors, status: response.http.status, calls };
+  }
+
+  const ONE_CITY_ONLY = {
+    message: 'An operation may request at most 1 city.',
+    extensions: { code: 'GRAPHQL_VALIDATION_FAILED' },
+  };
+
+  // H1a
+  it('rejects two aliased cities before anything reaches Open-Meteo', async () => {
+    const { errors, status, calls } = await run(`{
+      a: activityRankings(city: "Biarritz") { stale }
+      b: activityRankings(city: "Krakow") { stale }
+    }`);
+    expect(errors).toEqual([expect.objectContaining(ONE_CITY_ONLY)]);
+    expect(status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+
+  // H1b
+  it.each([
+    [
+      'a fragment spread',
+      `{ a: activityRankings(city: "x") { stale } ...More }
+       fragment More on Query { b: activityRankings(city: "y") { stale } }`,
+    ],
+    [
+      'a fragment nested in another fragment',
+      `{ ...Outer }
+       fragment Outer on Query { a: activityRankings(city: "x") { stale } ...Inner }
+       fragment Inner on Query { b: activityRankings(city: "y") { stale } }`,
+    ],
+    [
+      'an inline fragment on Query',
+      `{ a: activityRankings(city: "x") { stale } ... on Query { b: activityRankings(city: "y") { stale } } }`,
+    ],
+    [
+      'an inline fragment without a type condition',
+      `{ a: activityRankings(city: "x") { stale } ... { b: activityRankings(city: "y") { stale } } }`,
+    ],
+  ])('rejects a second city hidden in %s', async (_, document) => {
+    const { errors, calls } = await run(document);
+    expect(errors).toEqual([expect.objectContaining(ONE_CITY_ONLY)]);
+    expect(calls).toHaveLength(0);
+  });
+
+  // H1c
+  it('reports a fragment cycle with the standard error instead of looping', async () => {
+    const { errors, calls } = await run(`{ ...A }
+      fragment A on Query { ...B }
+      fragment B on Query { ...A activityRankings(city: "x") { stale } }`);
+    expect(errors?.[0]).toEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(/Cannot spread fragment "A" within itself/),
+        extensions: { code: 'GRAPHQL_VALIDATION_FAILED' },
+      }),
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  // H1d
+  it('counts a city under @skip, since directives are not trusted', async () => {
+    const { errors } = await run(`{
+      a: activityRankings(city: "x") { stale }
+      b: activityRankings(city: "y") @skip(if: true) { stale }
+    }`);
+    expect(errors).toEqual([expect.objectContaining(ONE_CITY_ONLY)]);
+  });
+
+  // H1e
+  it('checks each operation on its own: two one-city operations in one document are fine', async () => {
+    const { errors } = await run(
+      `query First { activityRankings(city: "Biarritz") { stale } }
+       query Second { activityRankings(city: "Krakow") { stale } }`,
+      'First',
+    );
+    expect(errors).toBeUndefined();
+  });
+
+  // H1f
+  it.each([
+    ['one city with __typename', '{ __typename activityRankings(city: "Biarritz") { stale } }'],
+    [
+      'the same city selected twice under one response key (fragment colocation)',
+      `{ activityRankings(city: "Biarritz") { stale } ...F }
+       fragment F on Query { activityRankings(city: "Biarritz") { fetchedAt } }`,
+    ],
+    ['the introspection query', getIntrospectionQuery()],
+  ])('accepts %s', async (_, document) => {
+    const { errors } = await run(document);
+    expect(errors).toBeUndefined();
   });
 });
 

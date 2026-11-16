@@ -14,6 +14,7 @@ Each item states the question and the assumption taken until it is answered.
 6. **Surfing.** Assumed: judged from the offshore wave model near the town, not breaking waves at a beach. Wind direction relative to the coast, tides and water temperature are ignored, and "too big" assumes a recreational surfer.
 7. **Indoor sightseeing.** Assumed: always possible; its score means "how good a choice it is that day", so it rises when outdoor conditions are poor. _Q: is that the intent, or should indoor be constant?_
 8. **Thresholds and weights** are judgment calls for a recreational user and have not been validated with domain experts.
+9. **Several cities in one request.** _Q: do clients need to compare cities in one request?_ Assumed: no. One operation asks for one city, and comparing cities takes several requests. Raising the limit is a one-line change (`MAX_CITIES_PER_OPERATION`).
 
 ## Decisions
 
@@ -122,6 +123,17 @@ Each item states the question and the assumption taken until it is answered.
   3. Nothing calls the function: across the installed dependency tree, only the package's own index re-exports it, and Apollo uses the package for `makeExecutableSchema`.
   4. A one-off runtime check (not part of CI), with the function wrapped in the module instance Apollo loads, ran the GraphQL integration tests of the time — including HTTP requests and `@defer`/`@stream` attempts — without a single call to it.
 - **Reconsider** when Apollo widens its supported range, or if the service ever consumes another GraphQL server or enables incremental delivery; the `@defer`/`@stream` test fails in the latter case.
+
+### Post-review hardening
+
+These entries were added after the six implementation phases, following a review of how the finished service behaves under load and abuse. Each entry went in with its change.
+
+- **One city per operation.**
+  - **The risk.** Root query fields resolve concurrently, so one request carrying hundreds of aliased `activityRankings` fields could trigger hundreds of geocoding and forecast calls.
+  - **The rule.** A validation rule rejects an operation that requests more than one city before anything runs (`GRAPHQL_VALIDATION_FAILED`, HTTP 400).
+  - **How it counts.** It counts distinct response keys and follows fragment spreads and inline fragments. Fields under the same key are merged by GraphQL and resolved once. `@skip` and `@include` are ignored, so the count can only err high.
+  - **Why one.** With one city per request, any per-request limit at a gateway maps directly to upstream cost: at most three calls. A limit of five was considered; it would weaken every such limit five-fold for a use case the brief does not mention (assumption 9).
+  - **Scope.** The rule covers `activityRankings` only. A data field added to `Query` later would need the same treatment.
 
 ## Known limitations
 
