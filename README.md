@@ -98,23 +98,23 @@ After changing `src/db/schema.ts`, `npm run db:generate` writes a new migration.
 
 ## The API
 
-There is one query, `activityRankings(city: String!)`; the schema is in [`src/graphql/schema.ts`](src/graphql/schema.ts).
+There is one query, `activityRankings(city: String!)`; the schema is in [`src/graphql/schema.ts`](src/graphql/schema.ts). An operation may request one city: asking for a second one (`activityRankings` under another alias, including inside a fragment) is rejected before anything runs. Compare cities with separate requests.
 
 - **`location`** is the place the search resolved to: Open-Meteo's top geocoding match. Adding a region disambiguates, e.g. `"Paris, Texas"`.
 - **`activities`** always lists the four activities in the same order. When an activity is available, `days` holds seven local dates (today in the location's time zone, then the next six), each with a `score` from 0 to 100, a `rank` among the seven days (1 = best, equal scores share a rank) and `reasons` describing the measured conditions.
 - **`available: false`** means the activity cannot be judged, not that the weather is bad. `unavailableReason` is `NO_MARINE_DATA` (no wave data, e.g. inland), `MARINE_TEMPORARILY_UNAVAILABLE` (the marine request failed and will be retried) or `INCOMPLETE_DATA` (an input is missing on at least one day). `days` is then empty.
 - **`fetchedAt`** is when Open-Meteo was last asked for the oldest of the seven days served.
-- **`stale`** is `true` only when this request tried to refresh expired weather data and the attempt failed, so previously stored weather was served. It is not a measure of age (use `fetchedAt`) and says nothing about marine data.
+- **`stale`** is `true` only when this request tried to refresh expired weather data and the attempt failed, so previously stored weather was served. A refresh refused because the process is already running its maximum number of upstream operations counts as a failed attempt. `stale` is not a measure of age (use `fetchedAt`) and says nothing about marine data.
 
 Errors have a code in `extensions.code`:
 
-| Code                                          | When                                                           |
-| --------------------------------------------- | -------------------------------------------------------------- |
-| `BAD_USER_INPUT`                              | `city` is empty or longer than 100 characters                  |
-| `LOCATION_NOT_FOUND`                          | the geocoder has no match                                      |
-| `UPSTREAM_UNAVAILABLE`                        | Open-Meteo cannot be reached and nothing usable is stored      |
-| `INTERNAL_SERVER_ERROR`                       | anything unexpected; generic message, details only in the logs |
-| `GRAPHQL_VALIDATION_FAILED`, `BAD_REQUEST`, … | invalid GraphQL or malformed HTTP requests (HTTP 4xx)          |
+| Code                                          | When                                                                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `BAD_USER_INPUT`                              | `city` is empty or longer than 100 characters                                                                                  |
+| `LOCATION_NOT_FOUND`                          | the geocoder has no match                                                                                                      |
+| `UPSTREAM_UNAVAILABLE`                        | Open-Meteo cannot be reached, or the upstream limit is reached, and nothing usable is stored                                   |
+| `INTERNAL_SERVER_ERROR`                       | anything unexpected; generic message, details only in the logs                                                                 |
+| `GRAPHQL_VALIDATION_FAILED`, `BAD_REQUEST`, … | invalid GraphQL (including more than one city per operation) or malformed HTTP requests, such as a body over 100 KB (HTTP 4xx) |
 
 ## How it works
 
@@ -128,6 +128,7 @@ GraphQL resolver ─► location service ─► forecast service ─► scoring 
 - **Locations.** Search text is normalised (case, whitespace, Unicode) and looked up in Postgres. Only a search not seen before calls Open-Meteo's geocoder, and its result is stored, so the same text keeps resolving to the same place.
 - **Caching and freshness.** Raw daily weather is stored per location and local date. A week is served from Postgres when all seven dates are stored and the weather is younger than the TTL (`FORECAST_TTL_SECONDS`, 1 hour by default). Otherwise the service fetches weather and marine forecasts for exactly those dates, writes them in a single upsert and returns what Postgres then holds. Concurrent requests for the same location and week within one process share a single refresh.
 - **Failures.** If a refresh fails, a complete stored week is served with `stale: true`; an incomplete week is never served, and the request fails with `UPSTREAM_UNAVAILABLE`. If only the marine request fails, the weather is still stored and served, and surfing is `MARINE_TEMPORARILY_UNAVAILABLE` until a retry after `MARINE_RETRY_SECONDS` (5 minutes by default) succeeds.
+- **Upstream limit.** Each process runs at most `UPSTREAM_MAX_CONCURRENT` upstream operations at once (10 by default). A geocode counts as one, and so does a refresh with its weather and marine calls together; requests that join a refresh already running take nothing extra. When the limit is reached the request does not wait: a refresh is skipped and handled like a failed one (a complete stored week is served, with `stale` as above, otherwise `UPSTREAM_UNAVAILABLE`), and a new search gets `UPSTREAM_UNAVAILABLE`. Nothing is written in either case.
 - **Concurrent refreshes.** Each row records when its refresh was requested, and an upsert only replaces older rows, so a slow refresh that finishes last cannot overwrite data from a refresh requested after it. Across several instances this ordering relies on their clocks agreeing.
 - **Scoring.** Scores are computed on read: `score = round(100 × gate × quality)`. Gates decide whether an activity is possible at all (enough snow, rideable waves, no downpour or gale); quality is a weighted mean of how pleasant the conditions are. Each input is a piecewise-linear curve, defined in one table per activity in [`src/domain/`](src/domain/). The seven days are then ranked within each activity.
 
@@ -141,6 +142,7 @@ The main ones are below; the full list, with reasons, is in [docs/DECISIONS.md](
 
 - Scoring thresholds and weights are unvalidated judgment calls.
 - `fetchedAt` is when the service asked Open-Meteo, not the age of the underlying model run.
+- The upstream limit bounds concurrent work in one process. It is not a rate limit and does not keep several instances within Open-Meteo's request quota.
 - Timeouts bound each step — every Open-Meteo request, database connection attempt and SQL statement — but there is no overall deadline for a request.
 - One out-of-range or non-numeric value rejects a whole Open-Meteo response; missing values (`null`) are accepted.
 - A high-severity advisory in a transitive dependency (`@graphql-tools/utils`, via Apollo Server) cannot be fixed within the versions Apollo supports; its exploit preconditions are not met by this service ([analysis](docs/DECISIONS.md#runtime-exception-graphql-toolsutils)).
@@ -152,22 +154,24 @@ The main ones are below; the full list, with reasons, is in [docs/DECISIONS.md](
 - User input only ever becomes a query parameter of requests to the configured Open-Meteo base URLs; it never forms a host or path. Responses are validated before use.
 - SQL is parameterised by Drizzle. Configuration comes from environment variables; `.env.example` contains local development values only.
 - Error responses are designed not to reveal internals: unexpected errors return a generic message and are logged in full, and malformed HTTP requests get a JSON error instead of a stack trace. Tests cover these paths.
-- Query depth is bounded because no schema type refers back to itself. Apollo's CSRF protection is on and operation batching is off.
+- Query depth is bounded because no schema type refers back to itself, and query breadth because an operation may request one city, so one request costs at most three Open-Meteo calls. Request bodies are limited to 100 KB. Apollo's CSRF protection is on and operation batching is off.
 - Introspection and Apollo's landing page are enabled unless `NODE_ENV=production`.
-- The endpoint is unauthenticated and not rate-limited, and each new city costs upstream requests and stored rows.
+- The endpoint is unauthenticated and not rate-limited, and each new city costs upstream requests and stored rows. Concurrent upstream work per process is capped (see How it works); a per-client rate limit belongs in front of the service, for example at a gateway.
 
 ## Configuration
 
-| Variable                                                     | Default                 | Meaning                                                    |
-| ------------------------------------------------------------ | ----------------------- | ---------------------------------------------------------- |
-| `DATABASE_URL`                                               | — (required)            | PostgreSQL connection string                               |
-| `PORT`                                                       | `4000`                  | HTTP port                                                  |
-| `FORECAST_TTL_SECONDS`                                       | `3600`                  | How long stored weather is served before a refresh         |
-| `MARINE_RETRY_SECONDS`                                       | `300`                   | How soon a failed marine request is retried                |
-| `UPSTREAM_TIMEOUT_MS`                                        | `3000`                  | Timeout for each Open-Meteo request                        |
-| `DB_CONNECTION_TIMEOUT_MS`                                   | `5000`                  | Timeout for opening a database connection                  |
-| `DB_STATEMENT_TIMEOUT_MS`                                    | `5000`                  | PostgreSQL `statement_timeout` for every query             |
-| `GEOCODING_BASE_URL`, `FORECAST_BASE_URL`, `MARINE_BASE_URL` | Open-Meteo's public API | Upstream base URLs, e.g. to point tests or demos elsewhere |
+| Variable                                                     | Default                 | Meaning                                                                                |
+| ------------------------------------------------------------ | ----------------------- | -------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                               | — (required)            | PostgreSQL connection string                                                           |
+| `PORT`                                                       | `4000`                  | HTTP port                                                                              |
+| `FORECAST_TTL_SECONDS`                                       | `3600`                  | How long stored weather is served before a refresh                                     |
+| `MARINE_RETRY_SECONDS`                                       | `300`                   | How soon a failed marine request is retried                                            |
+| `UPSTREAM_TIMEOUT_MS`                                        | `3000`                  | Timeout for each Open-Meteo request                                                    |
+| `UPSTREAM_MAX_CONCURRENT`                                    | `10`                    | Upstream operations at once per process; beyond it, requests fall back without waiting |
+| `DB_CONNECTION_TIMEOUT_MS`                                   | `5000`                  | Timeout for opening a database connection                                              |
+| `DB_STATEMENT_TIMEOUT_MS`                                    | `5000`                  | PostgreSQL `statement_timeout` for every query                                         |
+| `DB_POOL_MAX`                                                | `10`                    | Database connections per process; keep instances × this below `max_connections`        |
+| `GEOCODING_BASE_URL`, `FORECAST_BASE_URL`, `MARINE_BASE_URL` | Open-Meteo's public API | Upstream base URLs, e.g. to point tests or demos elsewhere                             |
 
 ## Project layout
 
@@ -177,7 +181,7 @@ src/
   domain/               scoring, availability, ranking and date logic (pure functions)
   openmeteo/client.ts   Open-Meteo requests and response validation
   db/                   Drizzle schema and connection pool
-  services/             location lookup, forecast caching and refresh
+  services/             location lookup, forecast caching and refresh, upstream limiter
   graphql/              schema, resolver, error handling, Express HTTP server
   index.ts              wiring and startup
 drizzle/                SQL migrations
