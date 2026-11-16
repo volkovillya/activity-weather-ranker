@@ -346,6 +346,25 @@ describe('errors', () => {
     const { errors } = await query('Biarritz', '{ activityRankings(city: "x") { nope } }');
     expect(errors?.[0]?.extensions?.code).toBe('GRAPHQL_VALIDATION_FAILED');
   });
+
+  // Security precondition, not a feature: the @graphql-tools/utils advisory (GHSA-c4qx-w738-7hr3)
+  // concerns merging incremental (@defer/@stream) payloads. If an upgrade ever enables
+  // incremental delivery, this fails and the exposure analysis in docs/DECISIONS.md must be redone.
+  it.each([
+    ['@defer', '{ activityRankings(city: "x") { ... @defer { stale } } }'],
+    ['@stream', '{ activityRankings(city: "x") { activities @stream { activity } } }'],
+  ])('rejects %s: incremental delivery is not available', async (directive, document) => {
+    const { query, calls } = setup();
+    const { errors } = await query('Biarritz', document);
+
+    expect(errors?.[0]).toEqual(
+      expect.objectContaining({
+        message: `Unknown directive "${directive}".`,
+        extensions: { code: 'GRAPHQL_VALIDATION_FAILED' },
+      }),
+    );
+    expect(calls).toHaveLength(0);
+  });
 });
 
 // ---------- Named outcomes, each from a recorded fixture ----------
