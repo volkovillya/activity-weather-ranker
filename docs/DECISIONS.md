@@ -37,6 +37,25 @@ Questions I would normally settle with a product manager, and the assumption tak
 
 - **PostgreSQL 17, run locally with Docker Compose.** SQLite was considered: zero setup for a reviewer, but the refresh logic depends on concurrent writers and conditional upserts, which Postgres lets us test for real. The cost is that running the service and its integration tests needs Docker. The Compose credentials are for local development only.
 
+### Scoring (`src/domain/`)
+
+- **`score = round(100 × gate × quality)`.** _Gates_ answer "can you do it at all" (snow depth, wave height, a downpour, a gale): 1 in normal conditions, falling to 0 only at extremes, and the lowest gate counts. _Quality_ is a weighted mean of factors that answer "how pleasant is it". Two simpler formulas were rejected:
+  - A plain weighted mean lets a must-have be outvoted: a perfectly cold, calm day with no snow on the ground would still score about 50 for skiing.
+  - `min(weighted mean, limiting factor)` fixes that but collapses days: whenever the limiting factor is the worst one, the score _is_ that factor. A week with the same 20 cm snow base all week would score identically every day, so there is nothing to rank. Multiplying keeps the days apart (36, 38, 26, 43, 26, 30, 39 for such a week).
+- **Every input is a piecewise-linear curve** (`interpolate`), so similar days get different scores instead of falling into the same tier. Fixed penalty tiers were rejected for the same reason: a week of mild weather would collapse into identical scores.
+- **Curves and weights are data in one table per activity**, each with a comment on why it has that shape. The numbers are judgment calls for a recreational user (assumption 8). Surfing weights swell period above wave height because period decides wave quality.
+- **Indoor sightseeing** is derived from the outdoor score: `50 + (100 − outdoor) / 2`, capped by wind and heavy rain because getting there in a storm is not pleasant (assumption 7). A rule of "100 unless dangerous" was rejected: it ties almost every day.
+- **Halves round up, deliberately.** `100 × 0.5 × 0.79` evaluates to `39.49999999999999` in floating point, so plain `Math.round` gives 39 where the arithmetic says 40. `roundScore` adds `1e-9` before rounding so code and hand calculation agree.
+- **Availability is all-or-nothing per activity.** An activity is scored only when every input it reads is present on every day; otherwise it is unavailable with a reason (`NO_MARINE_DATA`, `MARINE_TEMPORARILY_UNAVAILABLE`, `INCOMPLETE_DATA`). Missing values are never replaced with 0, which would read as "bad" rather than "unknown". For surfing the marine-request flag is checked before the values, so a failed marine request is never shown as available. Each activity declares the inputs it reads; a test proves the list matches what the scoring code actually reads.
+- **Reasons** list the limiting gates first ("Limited by snow depth 20 cm"), then every factor's measured value in a fixed order, so the same day always gets the same explanation.
+- **Ranking:** higher score first; equal scores share a rank (1, 1, 3). Days are returned in date order, each with its rank.
+- **Units stay in the field names** (`snowDepthM`, `snowfallCm`): Open-Meteo returns snow depth in metres but snowfall in centimetres. The one conversion (metres to centimetres for snow depth) happens inside the skiing table.
+
+## Known limitations
+
+- **Scoring numbers are unvalidated.** For example, a sunny day at 0 °C scores 68 for outdoor sightseeing, which some would call generous; indoor scoring 50 on a perfect day is a product opinion.
+- **Wind is measured 10 m above the town,** not on the ridge or at the beach.
+
 ## Cut, with the reason
 
 - **Front end** — out of scope by the brief.

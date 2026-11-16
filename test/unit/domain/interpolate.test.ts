@@ -45,4 +45,10 @@ describe('interpolate', () => {
     expect(interpolate(surfHeightGate, 3.5)).toBeCloseTo(0.5, 12);
     expect(interpolate(surfHeightGate, 9)).toBe(0);
   });
+
+  it('rejects non-finite input instead of scoring it', () => {
+    for (const x of [NaN, Infinity, -Infinity]) {
+      expect(() => interpolate(rising, x)).toThrow('non-finite');
+    }
+  });
 });
