@@ -48,6 +48,18 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **The persisted lookup decides what a search means.** Two first requests for the same text can geocode at the same time, and the geocoder can rank results differently between two calls. Both inserts use `ON CONFLICT DO NOTHING`, and each request then reads the lookup back and returns the location it points to, so every caller — now and later — gets the same place. A location row inserted by the losing request stays unused (cleanup is on the cut list).
 - **"Not found" and "geocoder down" are different errors.** A geocoding miss stores nothing and is reported as not found; a geocoding failure is reported as upstream unavailable. A search that is already stored does not need the geocoder at all, even while it is down.
 
+### Forecast caching and refresh (`src/services/forecastService.ts`)
+
+- **Refresh on read, with a TTL** (default 1 hour). A scheduled job was rejected: the set of cities is unbounded and unknown, and refreshing on demand costs nothing for cities nobody asks about.
+- **A week is complete only if every one of its seven local dates has a row**, matched by date. After local midnight the week moves on by a day, so a stored week can be recent and still incomplete — it is refetched rather than served short.
+- **Weather freshness and marine retries are separate rules.** Weather is fresh while its oldest row is younger than the TTL. A week written without marine data because the marine request failed is retried after `MARINE_RETRY_SECONDS` (default 5 minutes). The retry window only ever shortens freshness; it never changes whether weather counts as stale.
+- **`stale` means one thing:** this request tried to refresh expired weather and failed, so older stored weather was served. It is not a measure of age (`fetchedAt` is) and says nothing about marine data, which is reported per activity. A refresh that succeeds is never stale, even with a TTL shorter than the refresh itself.
+- **Partial weeks are never served.** If the refresh fails and the stored week is incomplete, the request fails as upstream unavailable.
+- **`fetched_at` is the moment the refresh was requested, and an upsert may only replace an older row.** Stamping when the refresh _finished_ was the first design and is wrong: a refresh whose marine call hangs for three seconds would finish after a newer one and overwrite fresher weather with older, labelled as the newest. Ordering by request time means the refresh asked for later always wins, whichever writes first.
+- **Responses are always read back from Postgres**, never built from the upstream payload. A caller whose write lost to a newer one gets the newer rows; a caller whose refresh failed still benefits if another instance succeeded meanwhile; and data that failed to persist can never be returned. A database error is reported as an internal error, not as stale weather.
+- **Marine data is best-effort.** Weather is required; a failed marine request still stores the weather (with the marine flag off), so skiing and sightseeing are unaffected while surfing shows "temporarily unavailable". The refresh does wait for the marine call, bounded by the upstream timeout and at most once per retry window. Fetching marine in the background was rejected: a second write path and a second freshness state for little gain.
+- **Concurrent requests share one refresh** (single-flight, in process), keyed by location _and_ week, so two requests either side of local midnight do not share a refresh meant for a different week. The entry is removed however the refresh ends, so a failure is never cached. Across several instances a duplicate refresh is possible; it is wasteful but correct thanks to the guarded upsert. A cross-instance lock (Postgres advisory lock) is on the cut list.
+
 ### Scoring (`src/domain/`)
 
 - **`score = round(100 × gate × quality)`.** _Gates_ answer "can you do it at all" (snow depth, wave height, a downpour, a gale): 1 in normal conditions, falling to 0 only at extremes, and the lowest gate counts. _Quality_ is a weighted mean of factors that answer "how pleasant is it". Two simpler formulas were rejected:
@@ -80,6 +92,13 @@ Questions I would normally settle with a product manager, and the assumption tak
 - **Wind is measured 10 m above the town,** not on the ridge or at the beach.
 - **One invalid value rejects a whole response.** A single out-of-range number makes that refresh fail, so the service falls back to stored data or reports Open-Meteo as unavailable. That is the intended trade-off — never score from a response known to be broken — but it means one bad day blocks the other six.
 - **The physical ranges are judgment values,** wide on purpose; a genuine record-breaking value outside them would be rejected.
+- **`fetchedAt` says when we asked, not how old the forecast is.** Open-Meteo's model run may be hours older; refetching after the TTL can return the same numbers.
+- **Ordering by request time trusts the instances' clocks.** Two instances whose clocks disagree by more than the gap between their requests can order those refreshes the wrong way. Both carry near-identical data, and skew of seconds is small against a one-hour TTL.
+- **The seven rows of a week can come from different refreshes** (around local midnight, or when another instance writes between our write and our read). Each row is the newest we have and `fetchedAt` reports the oldest; a snapshot id per refresh was not added.
+- **Weather and marine data are replaced together.** A refresh requested later replaces the rows even if its marine call failed and an earlier one's succeeded; surfing then shows "temporarily unavailable" until the retry window passes.
+- **While Open-Meteo is down, each request for an expired city waits for the upstream timeout before falling back.** A failure cooldown is on the cut list.
+- **Deadlocks between overlapping refreshes are designed against, not proven impossible.** Rows are always written in date order so concurrent upserts take row locks in the same order; if Postgres still aborted one, it would surface as an internal error and the next request would retry.
+- **There is no end-to-end deadline for a request.** Each upstream call, connection attempt and SQL statement has its own timeout; a request that makes several of them can take longer than any one timeout.
 
 ## Cut, with the reason
 

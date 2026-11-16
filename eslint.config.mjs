@@ -10,6 +10,10 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
     },
+    rules: {
+      // `const { dropped, ...rest } = row` is the idiomatic way to omit a field.
+      '@typescript-eslint/no-unused-vars': ['error', { ignoreRestSiblings: true }],
+    },
   },
   { ...tseslint.configs.disableTypeChecked, files: ['**/*.js', '**/*.mjs'] },
   { files: ['**/*.js'], languageOptions: { sourceType: 'commonjs' } },
